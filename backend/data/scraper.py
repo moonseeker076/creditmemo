@@ -1,132 +1,305 @@
 import httpx
 import logging
 import re
-from typing import List, Dict
-from datetime import datetime
+from typing import List, Dict, Optional
+from datetime import datetime, timedelta
 from .cache import get_cached, set_cached
 
 logger = logging.getLogger(__name__)
 
-# Direct PDF URLs and index pages confirmed working via research
-CITIES = [
-    {
-        "id": "blairsville_ga",
-        "name": "Blairsville, GA",
-        "metro_id": None,
-        "state": "GA",
-        # CivicPlus CMS — /media/<id> pattern serves PDFs directly
-        "direct_pdfs": [
-            "https://www.blairsville-ga.gov/media/2456",  # Dec 10, 2024
-            "https://www.blairsville-ga.gov/media/2326",  # Oct 8, 2024
-            "https://www.blairsville-ga.gov/media/2661",  # Sep 2024
-        ],
-        # Union County (covers surrounding area) — CivicEngage, static HTML
-        "index_urls": [
-            "https://www.blairsville-ga.gov/citycouncil",
-            "https://www.unioncountyga.gov/AgendaCenter/Commission-Meeting-Agendas-3/",
-            "https://www.unioncountyga.gov/391/Commission-Meeting-Agendas-Minutes",
-        ],
-        "union_county_pdfs": [],  # Union County PDFs are encrypted/binary — skipped
-    },
-    {
-        "id": "indianapolis_in",
-        "name": "Indianapolis, IN",
-        "metro_id": "indianapolis",
-        "state": "IN",
-        "direct_pdfs": [],
-        "index_urls": [
-            "https://www.indy.gov/activity/council-meeting-minutes",
-            "https://www.indy.gov/activity/agendas-minutes-and-other-resources",
-            "https://indianapolis-in.municodemeetings.com/",
-        ],
-    },
-    {
-        "id": "nashville_tn",
-        "name": "Nashville-Davidson, TN",
-        "metro_id": "nashville",
-        "state": "TN",
-        # Nashville Drupal site serves /sites/default/files/ PDFs as static files
-        "direct_pdfs": [
-            "https://www.nashville.gov/sites/default/files/2025-01/121224DraftMinutes.pdf",
-            "https://www.nashville.gov/sites/default/files/2024-10/092624DraftMinutes.pdf",
-            "https://www.nashville.gov/sites/default/files/2024-02/020824DraftMinutes.pdf",
-        ],
-        "index_urls": [
-            "https://www.nashville.gov/departments/metro-clerk/legislative/minutes",
-            "https://www.nashville.gov/departments/council/boards/metro-council/meetings",
-        ],
-    },
+# ─── Nashville Socrata API ────────────────────────────────────────────────────
+NASHVILLE_PERMITS_URL = "https://data.nashville.gov/resource/3h5w-q8b7.json"
+NASHVILLE_APPS_URL    = "https://data.nashville.gov/resource/kqff-rxj8.json"
+
+# ─── Indianapolis ArcGIS FeatureServer ───────────────────────────────────────
+INDY_PERMITS_URL = (
+    "https://services6.arcgis.com/ONZht79c8QWuX759/arcgis/rest"
+    "/services/Building_Permits/FeatureServer/0/query"
+)
+
+# ─── Blairsville GA — direct PDF URLs (CivicPlus CMS) ────────────────────────
+BLAIRSVILLE_PDFS = [
+    "https://www.blairsville-ga.gov/media/2456",  # Dec 10, 2024
+    "https://www.blairsville-ga.gov/media/2326",  # Oct  8, 2024
+    "https://www.blairsville-ga.gov/media/2661",  # Sep  2024
 ]
 
-SIGNAL_KEYWORDS = {
-    "major_employer": ["headquarters", "hq", "campus", "facility", "plant", "warehouse",
-                       "distribution center", "corporate", "relocat", "employer", "company"],
-    "permit_activity": ["building permit", "construction permit", "development permit",
-                        "site plan", "rezoning", "rezone", "variance", "subdivision", "zoning"],
-    "retail_commercial": ["retail", "shopping center", "restaurant", "hotel", "mixed-use",
-                          "commercial development", "grocery", "brewery", "distillery"],
-    "infrastructure": ["road improvement", "highway", "interchange", "broadband", "fiber",
-                       "water system", "sewer", "infrastructure", "transit", "greenway"],
-    "residential": ["housing development", "apartment", "residential", "subdivision",
-                    "multifamily", "townhome", "affordable housing", "units"],
-    "economic_development": ["incentive", "tax abatement", "TIF", "opportunity zone",
-                             "economic development", "job creation", "new jobs", "investment",
-                             "grant", "loan"],
-    "large_project": ["million", "billion", "square feet", "sq ft", "acres", "phase"],
-}
-
-CATEGORY_LABELS = {
-    "major_employer": "Major Employer",
-    "permit_activity": "Permit Activity",
-    "retail_commercial": "Retail & Commercial",
-    "infrastructure": "Infrastructure",
-    "residential": "Residential Development",
-    "economic_development": "Economic Development",
-    "large_project": "Large Project",
-}
-
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/120.0.0.0 Safari/537.36"
+    )
+}
+
+# ─── Permit type classification ───────────────────────────────────────────────
+COMMERCIAL_TYPES = {
+    "commercial", "industrial", "office", "retail", "hotel", "warehouse",
+    "mixed use", "mixed-use", "restaurant", "institutional", "assembly",
+    "factory", "manufacturing", "storage", "distribution",
+}
+
+RESIDENTIAL_TYPES = {
+    "residential", "single family", "multi family", "multifamily",
+    "apartment", "townhouse", "townhome", "duplex", "condo",
 }
 
 
-def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
+def classify_permit(permit_type: str, work_class: str, description: str) -> str:
+    combined = f"{permit_type} {work_class} {description}".lower()
+    for t in COMMERCIAL_TYPES:
+        if t in combined:
+            return "commercial"
+    for t in RESIDENTIAL_TYPES:
+        if t in combined:
+            return "residential"
+    return "other"
+
+
+def fmt_value(val) -> Optional[str]:
     try:
-        import pypdf
-        import io
-        reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
-        text = ""
-        for page in reader.pages[:15]:
-            text += page.extract_text() or ""
-        return text
+        v = float(val)
+        if v <= 0:
+            return None
+        if v >= 1_000_000:
+            return f"${v/1_000_000:.1f}M"
+        if v >= 1_000:
+            return f"${v/1_000:.0f}K"
+        return f"${v:,.0f}"
+    except Exception:
+        return None
+
+
+# ─── Nashville ────────────────────────────────────────────────────────────────
+
+def fetch_nashville_permits(days_back: int = 180) -> List[Dict]:
+    cache_key = "open_data_nashville"
+    cached = get_cached(cache_key)
+    if cached:
+        return cached
+
+    cutoff = (datetime.utcnow() - timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%S")
+    findings = []
+
+    # Pull issued permits
+    params = {
+        "$limit": 200,
+        "$order": "permit_issued_dt DESC",
+        "$where": f"permit_issued_dt > '{cutoff}'",
+    }
+    try:
+        with httpx.Client(timeout=20, headers=HEADERS) as client:
+            resp = client.get(NASHVILLE_PERMITS_URL, params=params)
+            if resp.status_code == 200:
+                for row in resp.json():
+                    finding = _nashville_row_to_finding(row, "Issued Permit")
+                    if finding:
+                        findings.append(finding)
     except Exception as e:
-        logger.warning(f"PDF extraction failed: {e}")
+        logger.warning(f"Nashville issued permits fetch failed: {e}")
+
+    # Pull permit applications
+    params2 = {
+        "$limit": 100,
+        "$order": "application_date DESC",
+        "$where": f"application_date > '{cutoff}'",
+    }
+    try:
+        with httpx.Client(timeout=20, headers=HEADERS) as client:
+            resp = client.get(NASHVILLE_APPS_URL, params=params2)
+            if resp.status_code == 200:
+                for row in resp.json():
+                    finding = _nashville_row_to_finding(row, "Application")
+                    if finding:
+                        findings.append(finding)
+    except Exception as e:
+        logger.warning(f"Nashville applications fetch failed: {e}")
+
+    set_cached(cache_key, findings)
+    return findings
+
+
+def _nashville_row_to_finding(row: dict, source_type: str) -> Optional[Dict]:
+    permit_type  = row.get("permit_type", "")
+    work_class   = row.get("work_class", "")
+    description  = row.get("description", "") or row.get("permit_subtype", "")
+    applicant    = row.get("applicant_name", "") or row.get("owner", "")
+    address      = row.get("address", "")
+    const_cost   = row.get("const_cost", 0)
+    date_raw     = row.get("permit_issued_dt") or row.get("application_date", "")
+    permit_num   = row.get("permit_number", "") or row.get("permit_num", "")
+    status       = row.get("status", "")
+
+    if not address and not applicant:
+        return None
+
+    category = classify_permit(permit_type, work_class, description)
+    value_str = fmt_value(const_cost)
+
+    # Build a readable one-line summary
+    parts = []
+    if applicant:
+        parts.append(applicant)
+    if permit_type:
+        parts.append(permit_type.title())
+    if work_class:
+        parts.append(f"({work_class.title()})")
+    if description:
+        parts.append(f"— {description[:80]}")
+    if address:
+        parts.append(f"at {address}")
+    if value_str:
+        parts.append(f"| Value: {value_str}")
+    if status:
+        parts.append(f"| Status: {status}")
+
+    snippet = " ".join(parts)
+    date_str = date_raw[:10] if date_raw else ""
+
+    if category == "other" and not value_str:
+        return None  # skip low-signal rows
+
+    return {
+        "category": "permit_activity" if category != "commercial" else "retail_commercial",
+        "category_label": "Permit Activity" if category == "residential" else "Commercial Permit",
+        "keyword": permit_type,
+        "snippet": snippet,
+        "source": f"Nashville Open Data — {source_type}",
+        "date": date_str,
+        "value": value_str,
+        "address": address,
+        "applicant": applicant,
+        "permit_type": permit_type,
+        "work_class": work_class,
+        "permit_number": permit_num,
+    }
+
+
+# ─── Indianapolis ─────────────────────────────────────────────────────────────
+
+def fetch_indianapolis_permits(days_back: int = 180) -> List[Dict]:
+    cache_key = "open_data_indianapolis"
+    cached = get_cached(cache_key)
+    if cached:
+        return cached
+
+    cutoff_ts = int((datetime.utcnow() - timedelta(days=days_back)).timestamp() * 1000)
+
+    params = {
+        "where": f"issue_date >= {cutoff_ts}",
+        "outFields": "*",
+        "resultRecordCount": 200,
+        "orderByFields": "issue_date DESC",
+        "f": "json",
+    }
+
+    findings = []
+    try:
+        with httpx.Client(timeout=25, headers=HEADERS) as client:
+            resp = client.get(INDY_PERMITS_URL, params=params)
+            if resp.status_code == 200:
+                data = resp.json()
+                features = data.get("features", [])
+                # If no date-filtered results, grab latest 200
+                if not features:
+                    params2 = {
+                        "where": "1=1",
+                        "outFields": "*",
+                        "resultRecordCount": 200,
+                        "orderByFields": "OBJECTID DESC",
+                        "f": "json",
+                    }
+                    resp2 = client.get(INDY_PERMITS_URL, params=params2)
+                    if resp2.status_code == 200:
+                        features = resp2.json().get("features", [])
+
+                for feat in features:
+                    attrs = feat.get("attributes", {})
+                    finding = _indy_row_to_finding(attrs)
+                    if finding:
+                        findings.append(finding)
+    except Exception as e:
+        logger.warning(f"Indianapolis permits fetch failed: {e}")
+
+    set_cached(cache_key, findings)
+    return findings
+
+
+def _indy_row_to_finding(attrs: dict) -> Optional[Dict]:
+    # Field names vary — try multiple candidates
+    def get(*keys):
+        for k in keys:
+            v = attrs.get(k) or attrs.get(k.upper()) or attrs.get(k.lower())
+            if v and str(v).strip() not in ("None", "null", "0"):
+                return str(v).strip()
         return ""
 
+    permit_num   = get("permit_num", "PERMIT_NUM", "PermitNumber", "permit_number")
+    description  = get("description", "DESCRIPTION", "Description", "work_description")
+    address      = get("address", "ADDRESS", "location_address", "street_address")
+    street_num   = get("street_num", "STREET_NUM")
+    street_name  = get("street_name", "STREET_NAME")
+    work_type    = get("work_type", "WORK_TYPE", "WorkType", "permit_type")
+    status       = get("status", "STATUS", "Status")
+    declared_val = get("declared_value", "DECLARED_VALUE", "const_cost", "job_value")
+    applicant    = get("applicant_name", "APPLICANT_NAME", "contractor_name", "owner_name")
+    issue_ts     = attrs.get("issue_date") or attrs.get("ISSUE_DATE") or attrs.get("added_date")
 
-def extract_text_from_html(html: str) -> str:
-    text = re.sub(r'<script[^>]*>.*?</script>', ' ', html, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r'<style[^>]*>.*?</style>', ' ', text, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r'<[^>]+>', ' ', text)
-    text = re.sub(r'\s+', ' ', text)
-    return text.strip()
+    full_address = address or f"{street_num} {street_name}".strip()
+    if not full_address and not description:
+        return None
+
+    value_str = fmt_value(declared_val) if declared_val else None
+    category  = classify_permit(work_type, "", description)
+
+    # Parse timestamp (ArcGIS returns epoch ms)
+    date_str = ""
+    if issue_ts:
+        try:
+            date_str = datetime.utcfromtimestamp(int(issue_ts) / 1000).strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+    parts = []
+    if applicant:
+        parts.append(applicant)
+    if work_type:
+        parts.append(work_type.title())
+    if description:
+        parts.append(f"— {description[:100]}")
+    if full_address:
+        parts.append(f"at {full_address}")
+    if value_str:
+        parts.append(f"| Value: {value_str}")
+    if status:
+        parts.append(f"| {status}")
+
+    snippet = " ".join(parts)
+    if not snippet.strip():
+        return None
+
+    return {
+        "category": "permit_activity" if category == "residential" else "retail_commercial",
+        "category_label": "Permit Activity" if category == "residential" else "Commercial Permit",
+        "keyword": work_type,
+        "snippet": snippet,
+        "source": "Indianapolis Open Data",
+        "date": date_str,
+        "value": value_str,
+        "address": full_address,
+        "applicant": applicant,
+        "permit_type": work_type,
+        "permit_number": permit_num,
+    }
 
 
-def find_pdf_links(html: str, base_url: str) -> List[str]:
-    from urllib.parse import urlparse, urljoin
-    links = []
-    hrefs = re.findall(r'href=["\']([^"\']+)["\']', html, re.IGNORECASE)
-    for href in hrefs:
-        lower = href.lower()
-        if '.pdf' in lower or 'minutes' in lower or 'agenda' in lower:
-            full = urljoin(base_url, href)
-            if full.startswith('http') and full not in links:
-                links.append(full)
-    return links[:8]
+# ─── Blairsville GA (minutes PDFs) ───────────────────────────────────────────
 
+PERMIT_SECTION_MARKERS = [
+    "building permit", "site plan", "variance", "rezoning", "rezone",
+    "zoning", "conditional use", "special use", "development",
+    "approved", "denied", "tabled", "motion",
+]
 
 NAV_PHRASES = [
     "rss notify me", "search agendas by", "time period time period",
@@ -135,213 +308,136 @@ NAV_PHRASES = [
 ]
 
 
-def is_boilerplate(snippet: str) -> bool:
-    low = snippet.lower()
-    # Skip garbled binary text (high ratio of non-ASCII)
-    non_ascii = sum(1 for c in snippet if ord(c) > 127)
-    if non_ascii > len(snippet) * 0.12:
-        return True
-    # Skip obvious website navigation text
-    for phrase in NAV_PHRASES:
-        if phrase in low:
-            return True
-    # Skip if same word repeated many times (navigation lists)
-    words = low.split()
-    if len(words) > 8:
-        most_common_count = max(words.count(w) for w in set(words))
-        if most_common_count > 5:
-            return True
-    return False
-
-
-def extract_full_sentence(text: str, idx: int, kw: str) -> str:
-    """Extract a full sentence or two around the keyword match."""
-    # Find sentence boundaries
-    search_start = max(0, idx - 400)
-    search_end = min(len(text), idx + len(kw) + 400)
-    region = text[search_start:search_end]
-
-    # Find sentence start (look back for period/newline)
-    rel_idx = idx - search_start
-    sent_start = rel_idx
-    for i in range(rel_idx, max(0, rel_idx - 300), -1):
-        if i < len(region) and region[i] in '.!?\n':
-            sent_start = i + 1
-            break
-
-    # Find sentence end (look forward for period/newline)
-    sent_end = min(len(region), rel_idx + len(kw) + 300)
-    for i in range(rel_idx + len(kw), min(len(region), rel_idx + len(kw) + 300)):
-        if region[i] in '.!?\n':
-            sent_end = i + 1
-            break
-
-    snippet = region[sent_start:sent_end].strip()
-    snippet = re.sub(r'\s+', ' ', snippet)
-    # Cap at 600 chars but keep whole words
-    if len(snippet) > 600:
-        snippet = snippet[:600].rsplit(' ', 1)[0] + '...'
-    return snippet
-
-
-def scan_for_signals(text: str, source: str) -> List[Dict]:
-    findings = []
-    text_lower = text.lower()
-    seen = set()
-
-    for category, keywords in SIGNAL_KEYWORDS.items():
-        for kw in keywords:
-            pos = 0
-            while True:
-                idx = text_lower.find(kw.lower(), pos)
-                if idx == -1:
-                    break
-                snippet = extract_full_sentence(text, idx, kw)
-                key = snippet[:80]
-                if key not in seen and len(snippet) > 40 and not is_boilerplate(snippet):
-                    seen.add(key)
-                    findings.append({
-                        "category": category,
-                        "category_label": CATEGORY_LABELS[category],
-                        "keyword": kw,
-                        "snippet": snippet,
-                        "source": source,
-                    })
-                pos = idx + 1
-                if len(findings) > 150:
-                    break
-            if len(findings) > 150:
-                break
-    return findings
-
-
-def fetch_and_parse_pdf(client: httpx.Client, url: str) -> tuple[str, bool]:
-    """Returns (text, success)."""
+def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
     try:
-        resp = client.get(url, timeout=25, follow_redirects=True)
-        if resp.status_code != 200:
-            logger.warning(f"PDF fetch {url} returned {resp.status_code}")
-            return "", False
-        content_type = resp.headers.get("content-type", "")
-        if "pdf" in content_type or url.lower().endswith(".pdf") or len(resp.content) > 5000:
-            text = extract_text_from_pdf_bytes(resp.content)
-            if text:
-                return text, True
-        # Try as HTML
-        text = extract_text_from_html(resp.text)
-        return text, bool(text)
+        import pypdf
+        import io
+        reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+        return "".join(page.extract_text() or "" for page in reader.pages[:20])
     except Exception as e:
-        logger.warning(f"Fetch failed {url}: {e}")
-        return "", False
+        logger.warning(f"PDF extraction failed: {e}")
+        return ""
 
 
-def scrape_city(city: Dict) -> Dict:
-    cache_key = f"scrape_{city['id']}"
+def is_garbled(text: str) -> bool:
+    non_ascii = sum(1 for c in text if ord(c) > 127)
+    return non_ascii > len(text) * 0.12 if text else True
+
+
+def extract_permit_sentences(text: str) -> List[str]:
+    """Pull only sentences that contain permit/zoning keywords."""
+    sentences = re.split(r'(?<=[.!?])\s+|\n', text)
+    results = []
+    for sent in sentences:
+        sent = sent.strip()
+        if len(sent) < 20 or is_garbled(sent):
+            continue
+        low = sent.lower()
+        if any(kw in low for kw in PERMIT_SECTION_MARKERS):
+            clean = re.sub(r'\s+', ' ', sent)[:500]
+            results.append(clean)
+    return results
+
+
+def fetch_blairsville_minutes() -> List[Dict]:
+    cache_key = "open_data_blairsville"
     cached = get_cached(cache_key)
     if cached:
         return cached
 
-    all_findings = []
-    sources_checked = []
-    pdfs_found = 0
-
-    with httpx.Client(timeout=20, follow_redirects=True, headers=HEADERS) as client:
-
-        # 1. Try direct known PDF URLs first
-        for pdf_url in city.get("direct_pdfs", []):
-            text, ok = fetch_and_parse_pdf(client, pdf_url)
-            if ok and text:
-                pdfs_found += 1
-                sources_checked.append(pdf_url)
-                findings = scan_for_signals(text, f"PDF: {pdf_url.split('/')[-1]}")
-                all_findings.extend(findings)
-                logger.info(f"[{city['name']}] Got {len(findings)} signals from {pdf_url.split('/')[-1]}")
-
-        # 2. Also try union county PDFs if present
-        for pdf_url in city.get("union_county_pdfs", []):
-            text, ok = fetch_and_parse_pdf(client, pdf_url)
-            if ok and text:
-                pdfs_found += 1
-                sources_checked.append(pdf_url)
-                findings = scan_for_signals(text, f"PDF: Union County {pdf_url.split('/')[-1]}")
-                all_findings.extend(findings)
-
-        # 3. Try index pages — scrape HTML and look for more PDF links
-        for url in city.get("index_urls", []):
+    findings = []
+    with httpx.Client(timeout=25, follow_redirects=True, headers=HEADERS) as client:
+        for pdf_url in BLAIRSVILLE_PDFS:
             try:
-                resp = client.get(url, timeout=15)
+                resp = client.get(pdf_url, timeout=20)
                 if resp.status_code != 200:
                     continue
-                sources_checked.append(url)
-                html = resp.text
-
-                # Scan page text for signals
-                page_text = extract_text_from_html(html)
-                if len(page_text) > 200:
-                    html_findings = scan_for_signals(page_text, f"Web: {url.split('//')[-1][:40]}")
-                    all_findings.extend(html_findings)
-
-                # Find additional PDF links on page
-                extra_pdfs = find_pdf_links(html, url)
-                for pdf_url in extra_pdfs[:3]:
-                    if pdf_url not in sources_checked:
-                        text, ok = fetch_and_parse_pdf(client, pdf_url)
-                        if ok and text:
-                            pdfs_found += 1
-                            sources_checked.append(pdf_url)
-                            findings = scan_for_signals(text, f"PDF: {pdf_url.split('/')[-1][:40]}")
-                            all_findings.extend(findings)
-
+                text = extract_text_from_pdf_bytes(resp.content)
+                if not text or is_garbled(text):
+                    continue
+                sentences = extract_permit_sentences(text)
+                fname = pdf_url.split("/")[-1]
+                for sent in sentences[:15]:
+                    findings.append({
+                        "category": "permit_activity",
+                        "category_label": "Permit Activity",
+                        "keyword": "permit",
+                        "snippet": sent,
+                        "source": f"Blairsville Council Minutes — {fname}",
+                        "date": "",
+                        "value": None,
+                        "address": "",
+                        "applicant": "",
+                        "permit_type": "",
+                        "permit_number": "",
+                    })
             except Exception as e:
-                logger.warning(f"Index scrape failed {url}: {e}")
+                logger.warning(f"Blairsville PDF failed {pdf_url}: {e}")
 
-    # Deduplicate
-    seen_snippets = set()
-    unique_findings = []
-    for f in all_findings:
-        key = f["snippet"][:80]
-        if key not in seen_snippets:
-            seen_snippets.add(key)
-            unique_findings.append(f)
+    set_cached(cache_key, findings)
+    return findings
 
-    result = {
-        "city_id": city["id"],
-        "city_name": city["name"],
-        "metro_id": city.get("metro_id"),
-        "state": city["state"],
-        "scraped_at": datetime.utcnow().isoformat(),
-        "sources_checked": sources_checked,
-        "pdfs_found": pdfs_found,
-        "findings": unique_findings[:80],
-        "finding_count": len(unique_findings),
-        "categories_found": list(set(f["category"] for f in unique_findings)),
-        "status": "success" if unique_findings else "no_findings",
+
+# ─── Public entry points ──────────────────────────────────────────────────────
+
+CITIES = [
+    {"id": "blairsville_ga",   "name": "Blairsville, GA",       "metro_id": None,            "state": "GA"},
+    {"id": "indianapolis_in",  "name": "Indianapolis, IN",       "metro_id": "indianapolis",  "state": "IN"},
+    {"id": "nashville_tn",     "name": "Nashville-Davidson, TN", "metro_id": "nashville",     "state": "TN"},
+]
+
+_FETCHERS = {
+    "blairsville_ga":  fetch_blairsville_minutes,
+    "indianapolis_in": fetch_indianapolis_permits,
+    "nashville_tn":    fetch_nashville_permits,
+}
+
+
+def scrape_city(city: Dict) -> Dict:
+    fetcher = _FETCHERS.get(city["id"])
+    if not fetcher:
+        return _empty(city, "no_fetcher")
+
+    try:
+        findings = fetcher()
+    except Exception as e:
+        logger.error(f"Fetcher failed for {city['name']}: {e}")
+        return _empty(city, f"error: {e}")
+
+    return {
+        "city_id":         city["id"],
+        "city_name":       city["name"],
+        "metro_id":        city.get("metro_id"),
+        "state":           city["state"],
+        "scraped_at":      datetime.utcnow().isoformat(),
+        "sources_checked": [city["id"]],
+        "pdfs_found":      0,
+        "findings":        findings[:80],
+        "finding_count":   len(findings),
+        "categories_found": list({f["category"] for f in findings}),
+        "status":          "success" if findings else "no_findings",
     }
-
-    set_cached(cache_key, result)
-    return result
 
 
 def scrape_all_cities() -> List[Dict]:
     results = []
     for city in CITIES:
-        try:
-            logger.info(f"Scraping {city['name']}...")
-            result = scrape_city(city)
-            results.append(result)
-            logger.info(f"[{city['name']}] {result['finding_count']} signals, {result['pdfs_found']} PDFs")
-        except Exception as e:
-            logger.error(f"Failed to scrape {city['name']}: {e}")
-            results.append({
-                "city_id": city["id"],
-                "city_name": city["name"],
-                "state": city["state"],
-                "status": "error",
-                "error": str(e),
-                "findings": [],
-                "finding_count": 0,
-                "pdfs_found": 0,
-                "sources_checked": [],
-                "categories_found": [],
-            })
+        logger.info(f"Fetching {city['name']}...")
+        results.append(scrape_city(city))
+        logger.info(f"  → {results[-1]['finding_count']} findings")
     return results
+
+
+def _empty(city: Dict, reason: str) -> Dict:
+    return {
+        "city_id":         city["id"],
+        "city_name":       city["name"],
+        "state":           city["state"],
+        "status":          reason,
+        "findings":        [],
+        "finding_count":   0,
+        "pdfs_found":      0,
+        "sources_checked": [],
+        "categories_found": [],
+        "scraped_at":      datetime.utcnow().isoformat(),
+    }
