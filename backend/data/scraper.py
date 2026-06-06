@@ -78,43 +78,42 @@ def fetch_nashville_permits(days_back: int = 180) -> List[Dict]:
     if cached:
         return cached
 
-    cutoff = (datetime.utcnow() - timedelta(days=days_back)).strftime("%Y-%m-%dT%H:%M:%S")
     findings = []
 
-    # Pull issued permits
-    params = {
-        "$limit": 200,
-        "$order": "permit_issued_dt DESC",
-        "$where": f"permit_issued_dt > '{cutoff}'",
-    }
+    # Simple query — no date filter, just get latest records
+    params = {"$limit": 200, "$order": "permit_issued_dt DESC"}
     try:
         with httpx.Client(timeout=20, headers=HEADERS) as client:
             resp = client.get(NASHVILLE_PERMITS_URL, params=params)
+            logger.info(f"Nashville issued permits: HTTP {resp.status_code}, {len(resp.content)} bytes")
             if resp.status_code == 200:
-                for row in resp.json():
+                rows = resp.json()
+                logger.info(f"Nashville: got {len(rows)} rows, first keys: {list(rows[0].keys()) if rows else 'empty'}")
+                for row in rows:
                     finding = _nashville_row_to_finding(row, "Issued Permit")
                     if finding:
                         findings.append(finding)
+            else:
+                logger.warning(f"Nashville API error: {resp.status_code} {resp.text[:200]}")
     except Exception as e:
         logger.warning(f"Nashville issued permits fetch failed: {e}")
 
-    # Pull permit applications
-    params2 = {
-        "$limit": 100,
-        "$order": "application_date DESC",
-        "$where": f"application_date > '{cutoff}'",
-    }
+    # Also pull applications
+    params2 = {"$limit": 100, "$order": "application_date DESC"}
     try:
         with httpx.Client(timeout=20, headers=HEADERS) as client:
             resp = client.get(NASHVILLE_APPS_URL, params=params2)
+            logger.info(f"Nashville applications: HTTP {resp.status_code}")
             if resp.status_code == 200:
-                for row in resp.json():
+                rows = resp.json()
+                for row in rows:
                     finding = _nashville_row_to_finding(row, "Application")
                     if finding:
                         findings.append(finding)
     except Exception as e:
         logger.warning(f"Nashville applications fetch failed: {e}")
 
+    logger.info(f"Nashville total findings: {len(findings)}")
     set_cached(cache_key, findings)
     return findings
 
@@ -130,13 +129,13 @@ def _nashville_row_to_finding(row: dict, source_type: str) -> Optional[Dict]:
     permit_num   = row.get("permit_number", "") or row.get("permit_num", "")
     status       = row.get("status", "")
 
-    if not address and not applicant:
+    # Accept rows that have at least an address or permit type
+    if not address and not permit_type and not applicant:
         return None
 
     category = classify_permit(permit_type, work_class, description)
     value_str = fmt_value(const_cost)
 
-    # Build a readable one-line summary
     parts = []
     if applicant:
         parts.append(applicant)
@@ -153,11 +152,8 @@ def _nashville_row_to_finding(row: dict, source_type: str) -> Optional[Dict]:
     if status:
         parts.append(f"| Status: {status}")
 
-    snippet = " ".join(parts)
+    snippet = " ".join(parts) or f"Permit at {address or 'unknown location'}"
     date_str = date_raw[:10] if date_raw else ""
-
-    if category == "other" and not value_str:
-        return None  # skip low-signal rows
 
     return {
         "category": "permit_activity" if category != "commercial" else "retail_commercial",
@@ -183,44 +179,36 @@ def fetch_indianapolis_permits(days_back: int = 180) -> List[Dict]:
     if cached:
         return cached
 
-    cutoff_ts = int((datetime.utcnow() - timedelta(days=days_back)).timestamp() * 1000)
-
+    findings = []
     params = {
-        "where": f"issue_date >= {cutoff_ts}",
+        "where": "1=1",
         "outFields": "*",
         "resultRecordCount": 200,
-        "orderByFields": "issue_date DESC",
+        "orderByFields": "OBJECTID DESC",
         "f": "json",
     }
-
-    findings = []
     try:
         with httpx.Client(timeout=25, headers=HEADERS) as client:
             resp = client.get(INDY_PERMITS_URL, params=params)
+            logger.info(f"Indianapolis permits: HTTP {resp.status_code}, {len(resp.content)} bytes")
             if resp.status_code == 200:
                 data = resp.json()
                 features = data.get("features", [])
-                # If no date-filtered results, grab latest 200
-                if not features:
-                    params2 = {
-                        "where": "1=1",
-                        "outFields": "*",
-                        "resultRecordCount": 200,
-                        "orderByFields": "OBJECTID DESC",
-                        "f": "json",
-                    }
-                    resp2 = client.get(INDY_PERMITS_URL, params=params2)
-                    if resp2.status_code == 200:
-                        features = resp2.json().get("features", [])
-
+                logger.info(f"Indianapolis: got {len(features)} features")
+                if features:
+                    sample_attrs = features[0].get("attributes", {})
+                    logger.info(f"Indianapolis first record keys: {list(sample_attrs.keys())}")
                 for feat in features:
                     attrs = feat.get("attributes", {})
                     finding = _indy_row_to_finding(attrs)
                     if finding:
                         findings.append(finding)
+            else:
+                logger.warning(f"Indianapolis API error: {resp.status_code} {resp.text[:200]}")
     except Exception as e:
         logger.warning(f"Indianapolis permits fetch failed: {e}")
 
+    logger.info(f"Indianapolis total findings: {len(findings)}")
     set_cached(cache_key, findings)
     return findings
 
@@ -246,7 +234,7 @@ def _indy_row_to_finding(attrs: dict) -> Optional[Dict]:
     issue_ts     = attrs.get("issue_date") or attrs.get("ISSUE_DATE") or attrs.get("added_date")
 
     full_address = address or f"{street_num} {street_name}".strip()
-    if not full_address and not description:
+    if not full_address and not description and not work_type:
         return None
 
     value_str = fmt_value(declared_val) if declared_val else None
