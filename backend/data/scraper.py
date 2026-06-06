@@ -26,9 +26,7 @@ CITIES = [
             "https://www.unioncountyga.gov/AgendaCenter/Commission-Meeting-Agendas-3/",
             "https://www.unioncountyga.gov/391/Commission-Meeting-Agendas-Minutes",
         ],
-        "union_county_pdfs": [
-            "https://www.unioncountyga.gov/AgendaCenter/ViewFile/Minutes/_07082024-72",
-        ],
+        "union_county_pdfs": [],  # Union County PDFs are encrypted/binary — skipped
     },
     {
         "id": "indianapolis_in",
@@ -130,6 +128,58 @@ def find_pdf_links(html: str, base_url: str) -> List[str]:
     return links[:8]
 
 
+BOILERPLATE_SKIP = [
+    "board of zoning appeals", "advisory board", "advisory commission",
+    "meeting group", "view details", "board of parks", "criminal justice",
+    "assessment and intervention", "community food access",
+]
+
+
+def is_boilerplate(snippet: str) -> bool:
+    low = snippet.lower()
+    # Skip if it's mostly navigation/list text (lots of repetition)
+    if low.count("board") > 3 or low.count("advisory") > 2:
+        return True
+    for phrase in BOILERPLATE_SKIP:
+        if low.count(phrase) > 1:
+            return True
+    # Skip garbled binary text
+    non_ascii = sum(1 for c in snippet if ord(c) > 127)
+    if non_ascii > len(snippet) * 0.15:
+        return True
+    return False
+
+
+def extract_full_sentence(text: str, idx: int, kw: str) -> str:
+    """Extract a full sentence or two around the keyword match."""
+    # Find sentence boundaries
+    search_start = max(0, idx - 400)
+    search_end = min(len(text), idx + len(kw) + 400)
+    region = text[search_start:search_end]
+
+    # Find sentence start (look back for period/newline)
+    rel_idx = idx - search_start
+    sent_start = rel_idx
+    for i in range(rel_idx, max(0, rel_idx - 300), -1):
+        if i < len(region) and region[i] in '.!?\n':
+            sent_start = i + 1
+            break
+
+    # Find sentence end (look forward for period/newline)
+    sent_end = min(len(region), rel_idx + len(kw) + 300)
+    for i in range(rel_idx + len(kw), min(len(region), rel_idx + len(kw) + 300)):
+        if region[i] in '.!?\n':
+            sent_end = i + 1
+            break
+
+    snippet = region[sent_start:sent_end].strip()
+    snippet = re.sub(r'\s+', ' ', snippet)
+    # Cap at 400 chars but keep whole words
+    if len(snippet) > 400:
+        snippet = snippet[:400].rsplit(' ', 1)[0] + '...'
+    return snippet
+
+
 def scan_for_signals(text: str, source: str) -> List[Dict]:
     findings = []
     text_lower = text.lower()
@@ -142,12 +192,9 @@ def scan_for_signals(text: str, source: str) -> List[Dict]:
                 idx = text_lower.find(kw.lower(), pos)
                 if idx == -1:
                     break
-                start = max(0, idx - 150)
-                end = min(len(text), idx + len(kw) + 150)
-                snippet = text[start:end].strip().replace('\n', ' ')
-                snippet = re.sub(r'\s+', ' ', snippet)
-                key = snippet[:70]
-                if key not in seen and len(snippet) > 30:
+                snippet = extract_full_sentence(text, idx, kw)
+                key = snippet[:80]
+                if key not in seen and len(snippet) > 40 and not is_boilerplate(snippet):
                     seen.add(key)
                     findings.append({
                         "category": category,
@@ -157,9 +204,9 @@ def scan_for_signals(text: str, source: str) -> List[Dict]:
                         "source": source,
                     })
                 pos = idx + 1
-                if len(findings) > 60:
+                if len(findings) > 80:
                     break
-            if len(findings) > 60:
+            if len(findings) > 80:
                 break
     return findings
 
