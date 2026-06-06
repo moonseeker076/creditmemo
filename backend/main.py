@@ -22,7 +22,7 @@ from data.composite import compute_scores
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-SEED_MODE = "--seed" in sys.argv
+SEED_MODE = "--seed" in sys.argv or os.getenv("SEED_MODE", "").lower() in ("1", "true", "yes")
 
 METROS = [
     {"id": "austin", "name": "Austin–Round Rock, TX", "cbsa": "12420", "bls_series": "LAUMT122420000000006", "state": "TX", "region": "South"},
