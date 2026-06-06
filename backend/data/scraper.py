@@ -7,9 +7,11 @@ from .cache import get_cached, set_cached
 
 logger = logging.getLogger(__name__)
 
-# ─── Nashville Socrata API ────────────────────────────────────────────────────
-NASHVILLE_PERMITS_URL = "https://data.nashville.gov/resource/3h5w-q8b7.json"
-NASHVILLE_APPS_URL    = "https://data.nashville.gov/resource/kqff-rxj8.json"
+# ─── Nashville ArcGIS Hub (migrated from Socrata) ────────────────────────────
+# Nashville moved from Socrata to ArcGIS Hub. Use BLDS partner portal + ArcGIS Hub GeoJSON
+NASHVILLE_BLDS_URL   = "https://permits.partner.socrata.com/resource/7ky7-xbzp.json"
+NASHVILLE_ARCGIS_URL = "https://services2.arcgis.com/HdTo6HJqh92wn4D8/arcgis/rest/services/Building_Permits_Issued/FeatureServer/0/query"
+NASHVILLE_GEOJSON    = "https://opendata.arcgis.com/datasets/2576bfb2d74f418b8ba8c4538e4f729f_0.geojson"
 
 # ─── Indianapolis ArcGIS FeatureServer ───────────────────────────────────────
 INDY_PERMITS_URL = (
@@ -17,11 +19,12 @@ INDY_PERMITS_URL = (
     "/services/Building_Permits/FeatureServer/0/query"
 )
 
-# ─── Blairsville GA — direct PDF URLs (CivicPlus CMS) ────────────────────────
-BLAIRSVILLE_PDFS = [
-    "https://www.blairsville-ga.gov/media/2456",  # Dec 10, 2024
-    "https://www.blairsville-ga.gov/media/2326",  # Oct  8, 2024
-    "https://www.blairsville-ga.gov/media/2661",  # Sep  2024
+# ─── Blairsville GA — HTML pages (PDFs blocked by server) ────────────────────
+BLAIRSVILLE_PAGES = [
+    "https://www.blairsville-ga.gov/citycouncil",
+    "https://www.blairsville-ga.gov/document-library",
+    "https://www.blairsville-ga.gov/meetings",
+    "https://www.unioncountyga.gov/391/Commission-Meeting-Agendas-Minutes",
 ]
 
 HEADERS = {
@@ -80,38 +83,37 @@ def fetch_nashville_permits(days_back: int = 180) -> List[Dict]:
 
     findings = []
 
-    # Simple query — no date filter, just get latest records
-    params = {"$limit": 200, "$order": "permit_issued_dt DESC"}
+    # Try 1: BLDS partner Socrata portal (separate from main data.nashville.gov)
     try:
-        with httpx.Client(timeout=20, headers=HEADERS) as client:
-            resp = client.get(NASHVILLE_PERMITS_URL, params=params)
-            logger.info(f"Nashville issued permits: HTTP {resp.status_code}, {len(resp.content)} bytes")
+        with httpx.Client(timeout=20, headers=HEADERS, follow_redirects=True) as client:
+            resp = client.get(NASHVILLE_BLDS_URL, params={"$limit": 200, "$order": "issued_date DESC"})
+            logger.info(f"Nashville BLDS: HTTP {resp.status_code}, {len(resp.content)} bytes")
             if resp.status_code == 200:
                 rows = resp.json()
-                logger.info(f"Nashville: got {len(rows)} rows, first keys: {list(rows[0].keys()) if rows else 'empty'}")
+                logger.info(f"Nashville BLDS: {len(rows)} rows, keys: {list(rows[0].keys()) if rows else 'empty'}")
                 for row in rows:
-                    finding = _nashville_row_to_finding(row, "Issued Permit")
+                    finding = _nashville_row_to_finding(row, "BLDS Permit")
                     if finding:
                         findings.append(finding)
-            else:
-                logger.warning(f"Nashville API error: {resp.status_code} {resp.text[:200]}")
     except Exception as e:
-        logger.warning(f"Nashville issued permits fetch failed: {e}")
+        logger.warning(f"Nashville BLDS failed: {e}")
 
-    # Also pull applications
-    params2 = {"$limit": 100, "$order": "application_date DESC"}
-    try:
-        with httpx.Client(timeout=20, headers=HEADERS) as client:
-            resp = client.get(NASHVILLE_APPS_URL, params=params2)
-            logger.info(f"Nashville applications: HTTP {resp.status_code}")
-            if resp.status_code == 200:
-                rows = resp.json()
-                for row in rows:
-                    finding = _nashville_row_to_finding(row, "Application")
-                    if finding:
-                        findings.append(finding)
-    except Exception as e:
-        logger.warning(f"Nashville applications fetch failed: {e}")
+    # Try 2: ArcGIS Hub FeatureServer
+    if not findings:
+        try:
+            with httpx.Client(timeout=20, headers=HEADERS, follow_redirects=True) as client:
+                params = {"where": "1=1", "outFields": "*", "resultRecordCount": 200,
+                          "orderByFields": "OBJECTID DESC", "f": "json"}
+                resp = client.get(NASHVILLE_ARCGIS_URL, params=params)
+                logger.info(f"Nashville ArcGIS: HTTP {resp.status_code}, {len(resp.content)} bytes, body: {resp.text[:300]}")
+                if resp.status_code == 200:
+                    data = resp.json()
+                    for feat in data.get("features", []):
+                        finding = _nashville_row_to_finding(feat.get("attributes", {}), "ArcGIS Permit")
+                        if finding:
+                            findings.append(finding)
+        except Exception as e:
+            logger.warning(f"Nashville ArcGIS failed: {e}")
 
     logger.info(f"Nashville total findings: {len(findings)}")
     set_cached(cache_key, findings)
@@ -193,11 +195,15 @@ def fetch_indianapolis_permits(days_back: int = 180) -> List[Dict]:
             logger.info(f"Indianapolis permits: HTTP {resp.status_code}, {len(resp.content)} bytes")
             if resp.status_code == 200:
                 data = resp.json()
+                # Log full body if empty — helps diagnose ArcGIS errors
+                if "error" in data or not data.get("features"):
+                    logger.warning(f"Indianapolis full response: {resp.text[:500]}")
                 features = data.get("features", [])
                 logger.info(f"Indianapolis: got {len(features)} features")
                 if features:
                     sample_attrs = features[0].get("attributes", {})
                     logger.info(f"Indianapolis first record keys: {list(sample_attrs.keys())}")
+                    logger.info(f"Indianapolis first record: {dict(list(sample_attrs.items())[:8])}")
                 for feat in features:
                     attrs = feat.get("attributes", {})
                     finding = _indy_row_to_finding(attrs)
@@ -334,33 +340,36 @@ def fetch_blairsville_minutes() -> List[Dict]:
         return cached
 
     findings = []
-    with httpx.Client(timeout=25, follow_redirects=True, headers=HEADERS) as client:
-        for pdf_url in BLAIRSVILLE_PDFS:
+    with httpx.Client(timeout=20, follow_redirects=True, headers=HEADERS) as client:
+        for url in BLAIRSVILLE_PAGES:
             try:
-                resp = client.get(pdf_url, timeout=20)
+                resp = client.get(url, timeout=15)
+                logger.info(f"Blairsville {url}: HTTP {resp.status_code}, {len(resp.content)} bytes")
                 if resp.status_code != 200:
                     continue
-                text = extract_text_from_pdf_bytes(resp.content)
-                if not text or is_garbled(text):
-                    continue
+                # Strip HTML tags and extract readable text
+                html = resp.text
+                text = re.sub(r'<script[^>]*>.*?</script>', ' ', html, flags=re.DOTALL | re.IGNORECASE)
+                text = re.sub(r'<style[^>]*>.*?</style>', ' ', text, flags=re.DOTALL | re.IGNORECASE)
+                text = re.sub(r'<[^>]+>', ' ', text)
+                text = re.sub(r'\s+', ' ', text).strip()
+                logger.info(f"Blairsville extracted {len(text)} chars of text")
                 sentences = extract_permit_sentences(text)
-                fname = pdf_url.split("/")[-1]
-                for sent in sentences[:15]:
+                logger.info(f"Blairsville permit sentences: {len(sentences)}")
+                for sent in sentences[:20]:
                     findings.append({
                         "category": "permit_activity",
                         "category_label": "Permit Activity",
                         "keyword": "permit",
                         "snippet": sent,
-                        "source": f"Blairsville Council Minutes — {fname}",
-                        "date": "",
-                        "value": None,
-                        "address": "",
-                        "applicant": "",
-                        "permit_type": "",
-                        "permit_number": "",
+                        "source": f"Blairsville Public Records — {url.split('/')[-1]}",
+                        "date": "", "value": None, "address": "",
+                        "applicant": "", "permit_type": "", "permit_number": "",
                     })
+                if findings:
+                    break
             except Exception as e:
-                logger.warning(f"Blairsville PDF failed {pdf_url}: {e}")
+                logger.warning(f"Blairsville page failed {url}: {e}")
 
     set_cached(cache_key, findings)
     return findings
