@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 
-const BASE = '/api'
+const BASE = 'http://localhost:8000/api'
 
 export function useMarketData() {
   const [markets, setMarkets] = useState([])
