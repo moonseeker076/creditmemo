@@ -1,40 +1,80 @@
 import httpx
 import logging
 import re
-from typing import List, Dict, Optional
+from typing import List, Dict
 from datetime import datetime
 from .cache import get_cached, set_cached
 
 logger = logging.getLogger(__name__)
 
+# Direct PDF URLs and index pages confirmed working via research
 CITIES = [
-    {"id": "blairsville_ga", "name": "Blairsville, GA", "metro_id": None,
-     "urls": [
-         "https://www.blairsvillega.com/city-council",
-         "https://www.blairsvillega.com/minutes",
-         "https://www.unioncountyga.gov/government/commissioners",
-         "https://www.unioncountyga.gov/minutes",
-     ], "state": "GA"},
-    {"id": "indianapolis_in", "name": "Indianapolis, IN", "metro_id": "indianapolis",
-     "urls": [
-         "https://www.indy.gov/agency/city-county-council",
-         "https://council.indy.gov/",
-     ], "state": "IN"},
-    {"id": "nashville_tn", "name": "Nashville-Davidson, TN", "metro_id": "nashville",
-     "urls": [
-         "https://www.nashville.gov/departments/metropolitan-clerk/metro-council",
-         "https://www.nashville.gov/government/metro-council",
-     ], "state": "TN"},
+    {
+        "id": "blairsville_ga",
+        "name": "Blairsville, GA",
+        "metro_id": None,
+        "state": "GA",
+        # CivicPlus CMS — /media/<id> pattern serves PDFs directly
+        "direct_pdfs": [
+            "https://www.blairsville-ga.gov/media/2456",  # Dec 10, 2024
+            "https://www.blairsville-ga.gov/media/2326",  # Oct 8, 2024
+            "https://www.blairsville-ga.gov/media/2661",  # Sep 2024
+        ],
+        # Union County (covers surrounding area) — CivicEngage, static HTML
+        "index_urls": [
+            "https://www.blairsville-ga.gov/citycouncil",
+            "https://www.unioncountyga.gov/AgendaCenter/Commission-Meeting-Agendas-3/",
+            "https://www.unioncountyga.gov/391/Commission-Meeting-Agendas-Minutes",
+        ],
+        "union_county_pdfs": [
+            "https://www.unioncountyga.gov/AgendaCenter/ViewFile/Minutes/_07082024-72",
+        ],
+    },
+    {
+        "id": "indianapolis_in",
+        "name": "Indianapolis, IN",
+        "metro_id": "indianapolis",
+        "state": "IN",
+        "direct_pdfs": [],
+        "index_urls": [
+            "https://www.indy.gov/activity/council-meeting-minutes",
+            "https://www.indy.gov/activity/agendas-minutes-and-other-resources",
+            "https://indianapolis-in.municodemeetings.com/",
+        ],
+    },
+    {
+        "id": "nashville_tn",
+        "name": "Nashville-Davidson, TN",
+        "metro_id": "nashville",
+        "state": "TN",
+        # Nashville Drupal site serves /sites/default/files/ PDFs as static files
+        "direct_pdfs": [
+            "https://www.nashville.gov/sites/default/files/2025-01/121224DraftMinutes.pdf",
+            "https://www.nashville.gov/sites/default/files/2024-10/092624DraftMinutes.pdf",
+            "https://www.nashville.gov/sites/default/files/2024-02/020824DraftMinutes.pdf",
+        ],
+        "index_urls": [
+            "https://www.nashville.gov/departments/metro-clerk/legislative/minutes",
+            "https://www.nashville.gov/departments/council/boards/metro-council/meetings",
+        ],
+    },
 ]
 
 SIGNAL_KEYWORDS = {
-    "major_employer": ["headquarters", "hq", "campus", "facility", "plant", "warehouse", "distribution center", "corporate", "relocat", "employer"],
-    "permit_activity": ["building permit", "construction permit", "development permit", "site plan", "rezoning", "rezone", "variance", "subdivision", "zoning"],
-    "retail_commercial": ["retail", "shopping center", "restaurant", "hotel", "mixed-use", "commercial development", "grocery"],
-    "infrastructure": ["road improvement", "highway", "interchange", "broadband", "fiber", "water system", "sewer", "infrastructure"],
-    "residential": ["housing development", "apartment", "residential", "subdivision", "multifamily", "townhome", "affordable housing"],
-    "economic_development": ["incentive", "tax abatement", "TIF district", "opportunity zone", "economic development", "job creation", "new jobs", "investment"],
-    "large_project": ["million dollar", "billion", "square feet", "sq ft", "acres"],
+    "major_employer": ["headquarters", "hq", "campus", "facility", "plant", "warehouse",
+                       "distribution center", "corporate", "relocat", "employer", "company"],
+    "permit_activity": ["building permit", "construction permit", "development permit",
+                        "site plan", "rezoning", "rezone", "variance", "subdivision", "zoning"],
+    "retail_commercial": ["retail", "shopping center", "restaurant", "hotel", "mixed-use",
+                          "commercial development", "grocery", "brewery", "distillery"],
+    "infrastructure": ["road improvement", "highway", "interchange", "broadband", "fiber",
+                       "water system", "sewer", "infrastructure", "transit", "greenway"],
+    "residential": ["housing development", "apartment", "residential", "subdivision",
+                    "multifamily", "townhome", "affordable housing", "units"],
+    "economic_development": ["incentive", "tax abatement", "TIF", "opportunity zone",
+                             "economic development", "job creation", "new jobs", "investment",
+                             "grant", "loan"],
+    "large_project": ["million", "billion", "square feet", "sq ft", "acres", "phase"],
 }
 
 CATEGORY_LABELS = {
@@ -47,6 +87,13 @@ CATEGORY_LABELS = {
     "large_project": "Large Project",
 }
 
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+}
+
 
 def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
     try:
@@ -54,7 +101,7 @@ def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
         import io
         reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
         text = ""
-        for page in reader.pages[:10]:  # limit to 10 pages
+        for page in reader.pages[:15]:
             text += page.extract_text() or ""
         return text
     except Exception as e:
@@ -63,25 +110,24 @@ def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
 
 
 def extract_text_from_html(html: str) -> str:
-    # Strip tags
-    text = re.sub(r'<[^>]+>', ' ', html)
+    text = re.sub(r'<script[^>]*>.*?</script>', ' ', html, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<style[^>]*>.*?</style>', ' ', text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r'<[^>]+>', ' ', text)
     text = re.sub(r'\s+', ' ', text)
-    return text
+    return text.strip()
 
 
 def find_pdf_links(html: str, base_url: str) -> List[str]:
+    from urllib.parse import urlparse, urljoin
     links = []
-    # Find all href attributes
     hrefs = re.findall(r'href=["\']([^"\']+)["\']', html, re.IGNORECASE)
     for href in hrefs:
-        if href.lower().endswith('.pdf') or ('minutes' in href.lower() and '.pdf' in href.lower()):
-            if href.startswith('http'):
-                links.append(href)
-            elif href.startswith('/'):
-                from urllib.parse import urlparse
-                parsed = urlparse(base_url)
-                links.append(f"{parsed.scheme}://{parsed.netloc}{href}")
-    return links[:5]  # max 5 PDFs
+        lower = href.lower()
+        if '.pdf' in lower or 'minutes' in lower or 'agenda' in lower:
+            full = urljoin(base_url, href)
+            if full.startswith('http') and full not in links:
+                links.append(full)
+    return links[:8]
 
 
 def scan_for_signals(text: str, source: str) -> List[Dict]:
@@ -96,14 +142,12 @@ def scan_for_signals(text: str, source: str) -> List[Dict]:
                 idx = text_lower.find(kw.lower(), pos)
                 if idx == -1:
                     break
-                # Extract surrounding context
-                start = max(0, idx - 120)
-                end = min(len(text), idx + len(kw) + 120)
+                start = max(0, idx - 150)
+                end = min(len(text), idx + len(kw) + 150)
                 snippet = text[start:end].strip().replace('\n', ' ')
                 snippet = re.sub(r'\s+', ' ', snippet)
-
-                key = snippet[:60]
-                if key not in seen and len(snippet) > 20:
+                key = snippet[:70]
+                if key not in seen and len(snippet) > 30:
                     seen.add(key)
                     findings.append({
                         "category": category,
@@ -113,12 +157,31 @@ def scan_for_signals(text: str, source: str) -> List[Dict]:
                         "source": source,
                     })
                 pos = idx + 1
-                if len(findings) > 50:  # cap per city
+                if len(findings) > 60:
                     break
-            if len(findings) > 50:
+            if len(findings) > 60:
                 break
-
     return findings
+
+
+def fetch_and_parse_pdf(client: httpx.Client, url: str) -> tuple[str, bool]:
+    """Returns (text, success)."""
+    try:
+        resp = client.get(url, timeout=25, follow_redirects=True)
+        if resp.status_code != 200:
+            logger.warning(f"PDF fetch {url} returned {resp.status_code}")
+            return "", False
+        content_type = resp.headers.get("content-type", "")
+        if "pdf" in content_type or url.lower().endswith(".pdf") or len(resp.content) > 5000:
+            text = extract_text_from_pdf_bytes(resp.content)
+            if text:
+                return text, True
+        # Try as HTML
+        text = extract_text_from_html(resp.text)
+        return text, bool(text)
+    except Exception as e:
+        logger.warning(f"Fetch failed {url}: {e}")
+        return "", False
 
 
 def scrape_city(city: Dict) -> Dict:
@@ -131,46 +194,57 @@ def scrape_city(city: Dict) -> Dict:
     sources_checked = []
     pdfs_found = 0
 
-    headers = {
-        "User-Agent": "Mozilla/5.0 (compatible; RealEstateResearchBot/1.0; +public-records-research)"
-    }
+    with httpx.Client(timeout=20, follow_redirects=True, headers=HEADERS) as client:
 
-    for url in city["urls"]:
-        try:
-            with httpx.Client(timeout=15, follow_redirects=True) as client:
-                resp = client.get(url, headers=headers)
+        # 1. Try direct known PDF URLs first
+        for pdf_url in city.get("direct_pdfs", []):
+            text, ok = fetch_and_parse_pdf(client, pdf_url)
+            if ok and text:
+                pdfs_found += 1
+                sources_checked.append(pdf_url)
+                findings = scan_for_signals(text, f"PDF: {pdf_url.split('/')[-1]}")
+                all_findings.extend(findings)
+                logger.info(f"[{city['name']}] Got {len(findings)} signals from {pdf_url.split('/')[-1]}")
+
+        # 2. Also try union county PDFs if present
+        for pdf_url in city.get("union_county_pdfs", []):
+            text, ok = fetch_and_parse_pdf(client, pdf_url)
+            if ok and text:
+                pdfs_found += 1
+                sources_checked.append(pdf_url)
+                findings = scan_for_signals(text, f"PDF: Union County {pdf_url.split('/')[-1]}")
+                all_findings.extend(findings)
+
+        # 3. Try index pages — scrape HTML and look for more PDF links
+        for url in city.get("index_urls", []):
+            try:
+                resp = client.get(url, timeout=15)
                 if resp.status_code != 200:
                     continue
-
-                html = resp.text
                 sources_checked.append(url)
+                html = resp.text
 
-                # Try to find and parse PDFs
-                pdf_links = find_pdf_links(html, url)
-                for pdf_url in pdf_links[:3]:
-                    try:
-                        pdf_resp = client.get(pdf_url, headers=headers, timeout=20)
-                        if pdf_resp.status_code == 200:
-                            text = extract_text_from_pdf_bytes(pdf_resp.content)
-                            if text:
-                                pdfs_found += 1
-                                findings = scan_for_signals(text, f"PDF: {pdf_url.split('/')[-1]}")
-                                all_findings.extend(findings)
-                    except Exception as e:
-                        logger.warning(f"PDF download failed {pdf_url}: {e}")
-
-                # Also scan the HTML page itself
+                # Scan page text for signals
                 page_text = extract_text_from_html(html)
-                html_findings = scan_for_signals(page_text, f"Web: {url}")
-                all_findings.extend(html_findings)
+                if len(page_text) > 200:
+                    html_findings = scan_for_signals(page_text, f"Web: {url.split('//')[-1][:40]}")
+                    all_findings.extend(html_findings)
 
-                if all_findings:
-                    break  # found data, stop trying URLs
+                # Find additional PDF links on page
+                extra_pdfs = find_pdf_links(html, url)
+                for pdf_url in extra_pdfs[:3]:
+                    if pdf_url not in sources_checked:
+                        text, ok = fetch_and_parse_pdf(client, pdf_url)
+                        if ok and text:
+                            pdfs_found += 1
+                            sources_checked.append(pdf_url)
+                            findings = scan_for_signals(text, f"PDF: {pdf_url.split('/')[-1][:40]}")
+                            all_findings.extend(findings)
 
-        except Exception as e:
-            logger.warning(f"Scrape failed for {city['name']} at {url}: {e}")
+            except Exception as e:
+                logger.warning(f"Index scrape failed {url}: {e}")
 
-    # Deduplicate and limit
+    # Deduplicate
     seen_snippets = set()
     unique_findings = []
     for f in all_findings:
@@ -187,7 +261,7 @@ def scrape_city(city: Dict) -> Dict:
         "scraped_at": datetime.utcnow().isoformat(),
         "sources_checked": sources_checked,
         "pdfs_found": pdfs_found,
-        "findings": unique_findings[:30],
+        "findings": unique_findings[:40],
         "finding_count": len(unique_findings),
         "categories_found": list(set(f["category"] for f in unique_findings)),
         "status": "success" if unique_findings else "no_findings",
@@ -204,6 +278,7 @@ def scrape_all_cities() -> List[Dict]:
             logger.info(f"Scraping {city['name']}...")
             result = scrape_city(city)
             results.append(result)
+            logger.info(f"[{city['name']}] {result['finding_count']} signals, {result['pdfs_found']} PDFs")
         except Exception as e:
             logger.error(f"Failed to scrape {city['name']}: {e}")
             results.append({
@@ -213,5 +288,9 @@ def scrape_all_cities() -> List[Dict]:
                 "status": "error",
                 "error": str(e),
                 "findings": [],
+                "finding_count": 0,
+                "pdfs_found": 0,
+                "sources_checked": [],
+                "categories_found": [],
             })
     return results
