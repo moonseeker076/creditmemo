@@ -128,25 +128,29 @@ def find_pdf_links(html: str, base_url: str) -> List[str]:
     return links[:8]
 
 
-BOILERPLATE_SKIP = [
-    "board of zoning appeals", "advisory board", "advisory commission",
-    "meeting group", "view details", "board of parks", "criminal justice",
-    "assessment and intervention", "community food access",
+NAV_PHRASES = [
+    "rss notify me", "search agendas by", "time period time period",
+    "last week last month", "enter search terms", "save form progress",
+    "notify me®", "sign up", "subscribe", "cookie policy",
 ]
 
 
 def is_boilerplate(snippet: str) -> bool:
     low = snippet.lower()
-    # Skip if it's mostly navigation/list text (lots of repetition)
-    if low.count("board") > 3 or low.count("advisory") > 2:
-        return True
-    for phrase in BOILERPLATE_SKIP:
-        if low.count(phrase) > 1:
-            return True
-    # Skip garbled binary text
+    # Skip garbled binary text (high ratio of non-ASCII)
     non_ascii = sum(1 for c in snippet if ord(c) > 127)
-    if non_ascii > len(snippet) * 0.15:
+    if non_ascii > len(snippet) * 0.12:
         return True
+    # Skip obvious website navigation text
+    for phrase in NAV_PHRASES:
+        if phrase in low:
+            return True
+    # Skip if same word repeated many times (navigation lists)
+    words = low.split()
+    if len(words) > 8:
+        most_common_count = max(words.count(w) for w in set(words))
+        if most_common_count > 5:
+            return True
     return False
 
 
@@ -174,9 +178,9 @@ def extract_full_sentence(text: str, idx: int, kw: str) -> str:
 
     snippet = region[sent_start:sent_end].strip()
     snippet = re.sub(r'\s+', ' ', snippet)
-    # Cap at 400 chars but keep whole words
-    if len(snippet) > 400:
-        snippet = snippet[:400].rsplit(' ', 1)[0] + '...'
+    # Cap at 600 chars but keep whole words
+    if len(snippet) > 600:
+        snippet = snippet[:600].rsplit(' ', 1)[0] + '...'
     return snippet
 
 
@@ -204,9 +208,9 @@ def scan_for_signals(text: str, source: str) -> List[Dict]:
                         "source": source,
                     })
                 pos = idx + 1
-                if len(findings) > 80:
+                if len(findings) > 150:
                     break
-            if len(findings) > 80:
+            if len(findings) > 150:
                 break
     return findings
 
@@ -308,7 +312,7 @@ def scrape_city(city: Dict) -> Dict:
         "scraped_at": datetime.utcnow().isoformat(),
         "sources_checked": sources_checked,
         "pdfs_found": pdfs_found,
-        "findings": unique_findings[:40],
+        "findings": unique_findings[:80],
         "finding_count": len(unique_findings),
         "categories_found": list(set(f["category"] for f in unique_findings)),
         "status": "success" if unique_findings else "no_findings",
