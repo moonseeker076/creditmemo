@@ -5,7 +5,7 @@ import logging
 import argparse
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 from fastapi import FastAPI, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,7 +14,8 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from data.models import MetroData, SummaryData
-from data.cache import get_cached, set_cached, clear_cache
+from data.cache import get_cached, set_cached, clear_cache, CACHE_DIR
+from data.scraper import scrape_all_cities, scrape_city, CITIES as SCRAPER_CITIES
 from data.census import fetch_permits_for_metro, compute_permit_growth, fetch_acs_data
 from data.bls import fetch_employment_series, compute_employment_growth
 from data.composite import compute_scores
@@ -215,3 +216,35 @@ async def manual_refresh():
     _markets_cache = await refresh_all_data()
     _last_refreshed = datetime.utcnow().isoformat()
     return {"status": "refreshed", "last_refreshed": _last_refreshed, "markets": len(_markets_cache)}
+
+
+_intelligence_cache: List[Dict] = []
+_intelligence_refreshed: str = ""
+
+
+@app.get("/api/intelligence")
+async def get_intelligence():
+    global _intelligence_cache, _intelligence_refreshed
+    if not _intelligence_cache:
+        _intelligence_cache = scrape_all_cities()
+        _intelligence_refreshed = datetime.utcnow().isoformat()
+    return {"cities": _intelligence_cache, "last_refreshed": _intelligence_refreshed}
+
+
+@app.get("/api/intelligence/refresh")
+async def refresh_intelligence():
+    global _intelligence_cache, _intelligence_refreshed
+    for f in CACHE_DIR.glob("scrape_*.json"):
+        f.unlink()
+    _intelligence_cache = scrape_all_cities()
+    _intelligence_refreshed = datetime.utcnow().isoformat()
+    return {"status": "refreshed", "cities": len(_intelligence_cache)}
+
+
+@app.get("/api/intelligence/{city_id}")
+async def get_city_intelligence(city_id: str):
+    city = next((c for c in SCRAPER_CITIES if c["id"] == city_id), None)
+    if not city:
+        return {"error": "City not found"}
+    result = scrape_city(city)
+    return result

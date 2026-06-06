@@ -7,6 +7,7 @@ import EmploymentChart from './components/EmploymentChart.jsx'
 import MarketTable from './components/MarketTable.jsx'
 import MetroDrawer from './components/MetroDrawer.jsx'
 import DealSignalCards from './components/DealSignalCards.jsx'
+import CityIntelligence from './components/CityIntelligence.jsx'
 import { useMarketData } from './hooks/useMarketData.js'
 
 export default function App() {
@@ -62,6 +63,10 @@ export default function App() {
 
             <div style={{ marginTop: 24 }}>
               <DealSignalCards markets={markets} theme={theme} />
+            </div>
+
+            <div style={{ marginTop: 24 }}>
+              <CityIntelligence theme={theme} />
             </div>
           </>
         )}
