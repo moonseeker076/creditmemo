@@ -8,6 +8,7 @@ import MarketTable from './components/MarketTable.jsx'
 import MetroDrawer from './components/MetroDrawer.jsx'
 import DealSignalCards from './components/DealSignalCards.jsx'
 import CityIntelligence from './components/CityIntelligence.jsx'
+import ScoreExplainer from './components/ScoreExplainer.jsx'
 import { useMarketData } from './hooks/useMarketData.js'
 
 export default function App() {
@@ -57,7 +58,10 @@ export default function App() {
             </div>
 
             <div style={{ marginTop: 20 }}>
-              <h3 style={{ fontSize: 15, fontWeight: 700, marginBottom: 12, color: txt }}>Market Heat Index</h3>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                <h3 style={{ fontSize: 15, fontWeight: 700, color: txt }}>Market Heat Index</h3>
+                <ScoreExplainer theme={theme} />
+              </div>
               <MarketTable markets={markets} onSelect={setSelectedMetro} theme={theme} />
             </div>
 
