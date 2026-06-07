@@ -35,6 +35,14 @@ class MetroData(BaseModel):
     total_employment: Optional[float] = None
     population: Optional[int] = None
     median_income: Optional[float] = None
+    unemployment_rate: Optional[float] = None
+
+    home_value: Optional[float] = None
+    home_value_yoy: Optional[float] = None
+    rent_index: Optional[float] = None
+    rent_yoy: Optional[float] = None
+    home_value_series: List[TimePoint] = []
+    rent_series: List[TimePoint] = []
 
     analysis: Optional[Dict] = None
 

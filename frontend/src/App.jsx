@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState, useMemo } from 'react'
 import Header from './components/Header.jsx'
 import MetricCards from './components/MetricCards.jsx'
 import RegionFilter from './components/RegionFilter.jsx'
@@ -9,14 +9,22 @@ import MetroDrawer from './components/MetroDrawer.jsx'
 import DealSignalCards from './components/DealSignalCards.jsx'
 import CityIntelligence from './components/CityIntelligence.jsx'
 import ScoreExplainer from './components/ScoreExplainer.jsx'
+import WeightControls from './components/WeightControls.jsx'
+import CompareModal from './components/CompareModal.jsx'
 import { useMarketData } from './hooks/useMarketData.js'
+import { useWeights, applyWeights } from './hooks/useWeights.js'
 
 export default function App() {
   const [theme, setTheme] = useState(() =>
     window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'
   )
   const [selectedMetro, setSelectedMetro] = useState(null)
+  const [compareMetros, setCompareMetros] = useState(null)
+  const [watchlistOnly, setWatchlistOnly] = useState(false)
   const { markets, summary, loading, error, region, setRegion, refresh, lastRefreshed } = useMarketData()
+  const { weights, setWeights, resetWeights, isDefault } = useWeights()
+
+  const displayMarkets = useMemo(() => applyWeights(markets, weights), [markets, weights])
 
   const isDark = theme === 'dark'
   const bg = isDark ? '#0F1117' : '#FFFFFF'
@@ -53,20 +61,30 @@ export default function App() {
             </div>
 
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 20, marginTop: 20 }}>
-              <PermitChart markets={markets} theme={theme} />
-              <EmploymentChart markets={markets} theme={theme} />
+              <PermitChart markets={displayMarkets} theme={theme} />
+              <EmploymentChart markets={displayMarkets} theme={theme} />
             </div>
 
             <div style={{ marginTop: 20 }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12, flexWrap: 'wrap', gap: 8 }}>
                 <h3 style={{ fontSize: 15, fontWeight: 700, color: txt }}>Market Heat Index</h3>
-                <ScoreExplainer theme={theme} />
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <WeightControls weights={weights} setWeights={setWeights} resetWeights={resetWeights} isDefault={isDefault} theme={theme} />
+                  <ScoreExplainer theme={theme} />
+                </div>
               </div>
-              <MarketTable markets={markets} onSelect={setSelectedMetro} theme={theme} />
+              <MarketTable
+                markets={displayMarkets}
+                onSelect={setSelectedMetro}
+                onCompare={setCompareMetros}
+                theme={theme}
+                watchlistOnly={watchlistOnly}
+                onToggleWatchlist={() => setWatchlistOnly(w => !w)}
+              />
             </div>
 
             <div style={{ marginTop: 24 }}>
-              <DealSignalCards markets={markets} theme={theme} />
+              <DealSignalCards markets={displayMarkets} theme={theme} />
             </div>
 
             <div style={{ marginTop: 24 }}>
@@ -77,6 +95,7 @@ export default function App() {
       </main>
 
       <MetroDrawer metro={selectedMetro} onClose={() => setSelectedMetro(null)} theme={theme} />
+      <CompareModal metros={compareMetros} onClose={() => setCompareMetros(null)} theme={theme} />
 
       <style>{`
         @media (max-width: 768px) {

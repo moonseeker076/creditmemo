@@ -17,8 +17,10 @@ from data.models import MetroData, SummaryData
 from data.cache import get_cached, set_cached, clear_cache, CACHE_DIR
 from data.scraper import scrape_all_cities, scrape_city, CITIES as SCRAPER_CITIES
 from data.census import fetch_permits_for_metro, compute_permit_growth, fetch_acs_data
-from data.bls import fetch_employment_series, compute_employment_growth
+from data.bls import fetch_employment_series, compute_employment_growth, fetch_unemployment_rate
 from data.composite import compute_scores, compute_trend, classify_market_pattern
+from data.fred import compute_population_growth, get_population_series
+from data.zillow import get_zillow_metrics
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -179,6 +181,11 @@ def generate_seed_data() -> List[MetroData]:
             emp_series.append({"date": date_str, "value": round(base_emp * (1 + random.uniform(-0.01, 0.015)), 0)})
             pop_series.append({"date": date_str, "value": round(random.randint(500000, 3000000) * (1 + ppg / 100 * i / 24), 0)})
 
+        base_home_val = random.randint(250000, 700000)
+        base_rent = random.randint(1200, 3000)
+        hv_series = [{"date": res_series[i]["date"], "value": round(base_home_val * (1 + random.uniform(-0.01, 0.015)) ** i)} for i in range(len(res_series))]
+        rent_series_data = [{"date": res_series[i]["date"], "value": round(base_rent * (1 + random.uniform(-0.005, 0.012)) ** i)} for i in range(len(res_series))]
+
         metro = MetroData(
             id=m["id"],
             name=m["name"],
@@ -196,6 +203,13 @@ def generate_seed_data() -> List[MetroData]:
             total_employment=emp_series[-1]["value"] if emp_series else None,
             population=random.randint(500000, 7000000),
             median_income=random.randint(45000, 95000),
+            unemployment_rate=round(random.uniform(2.5, 6.5), 1),
+            home_value=hv_series[-1]["value"] if hv_series else None,
+            home_value_yoy=round((hv_series[-1]["value"] / hv_series[-13]["value"] - 1) * 100, 2) if len(hv_series) >= 13 else None,
+            rent_index=rent_series_data[-1]["value"] if rent_series_data else None,
+            rent_yoy=round((rent_series_data[-1]["value"] / rent_series_data[-13]["value"] - 1) * 100, 2) if len(rent_series_data) >= 13 else None,
+            home_value_series=hv_series,
+            rent_series=rent_series_data,
         )
         metros.append(metro)
 
@@ -220,8 +234,14 @@ async def refresh_all_data() -> List[MetroData]:
 
             emp_data = fetch_employment_series(m["bls_series"])
             eg = compute_employment_growth(emp_data)
+            unemp_rate = fetch_unemployment_rate(m["bls_series"])
 
             acs = fetch_acs_data(m["cbsa"])
+
+            pop_growth = compute_population_growth(m["cbsa"])
+            pop_series = get_population_series(m["cbsa"])
+
+            zillow = get_zillow_metrics(m["name"])
 
             res_series = permit_data.get("residential_series", [])
             com_series = permit_data.get("commercial_series", [])
@@ -235,15 +255,22 @@ async def refresh_all_data() -> List[MetroData]:
                 cbsa=m["cbsa"],
                 permit_growth_yoy=pg,
                 employment_growth_yoy=eg,
-                population_growth_yoy=None,
+                population_growth_yoy=pop_growth,
                 permit_series=[{"date": p["date"], "value": p["value"]} for p in res_series],
                 employment_series=[{"date": p["date"], "value": p["value"]} for p in emp_series],
-                population_series=[],
+                population_series=[{"date": p["date"], "value": p["value"]} for p in pop_series],
                 residential_permits=res_series[-1]["value"] if res_series else None,
                 commercial_permits=com_series[-1]["value"] if com_series else None,
                 total_employment=emp_series[-1]["value"] if emp_series else None,
                 population=acs.get("population"),
                 median_income=acs.get("median_income"),
+                unemployment_rate=unemp_rate,
+                home_value=zillow.get("home_value"),
+                home_value_yoy=zillow.get("home_value_yoy"),
+                rent_index=zillow.get("rent_index"),
+                rent_yoy=zillow.get("rent_yoy"),
+                home_value_series=[{"date": p["date"], "value": p["value"]} for p in zillow.get("home_value_series", [])],
+                rent_series=[{"date": p["date"], "value": p["value"]} for p in zillow.get("rent_series", [])],
             )
             metros.append(metro)
         except Exception as e:

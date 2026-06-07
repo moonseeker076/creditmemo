@@ -193,6 +193,39 @@ export default function MetroDrawer({ metro, onClose, theme }) {
             ))}
           </div>
 
+          {/* Zillow + Unemployment Stats */}
+          {(m.home_value || m.rent_index || m.unemployment_rate != null) && (
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ fontSize: 12, fontWeight: 700, color: '#888', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>Market Conditions</div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr 1fr', gap: 10 }}>
+                {m.home_value && (
+                  <div style={{ background: bg, borderRadius: 10, padding: '12px 14px', border: `1px solid ${border}` }}>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: '#378ADD' }}>{fmtCurrency(m.home_value)}</div>
+                    <div style={{ fontSize: 11, color: subTxt, marginTop: 2 }}>Median Home Value</div>
+                  </div>
+                )}
+                {m.home_value_yoy != null && (
+                  <div style={{ background: bg, borderRadius: 10, padding: '12px 14px', border: `1px solid ${border}` }}>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: m.home_value_yoy >= 0 ? '#1D9E75' : '#D85A30' }}>{fmtPct(m.home_value_yoy)}</div>
+                    <div style={{ fontSize: 11, color: subTxt, marginTop: 2 }}>Home Value YoY</div>
+                  </div>
+                )}
+                {m.rent_index && (
+                  <div style={{ background: bg, borderRadius: 10, padding: '12px 14px', border: `1px solid ${border}` }}>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: '#7F77DD' }}>${Math.round(m.rent_index).toLocaleString()}</div>
+                    <div style={{ fontSize: 11, color: subTxt, marginTop: 2 }}>Rent Index (ZORI)</div>
+                  </div>
+                )}
+                {m.unemployment_rate != null && (
+                  <div style={{ background: bg, borderRadius: 10, padding: '12px 14px', border: `1px solid ${border}` }}>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: m.unemployment_rate <= 4 ? '#1D9E75' : m.unemployment_rate <= 6 ? '#BA7517' : '#D85A30' }}>{m.unemployment_rate.toFixed(1)}%</div>
+                    <div style={{ fontSize: 11, color: subTxt, marginTop: 2 }}>Unemployment Rate</div>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Why This Market */}
           <div style={{ marginBottom: 20 }}>
             <div style={{ fontSize: 12, fontWeight: 700, color: '#1D9E75', marginBottom: 10, textTransform: 'uppercase', letterSpacing: 0.5 }}>WHY THIS MARKET</div>
@@ -226,6 +259,37 @@ export default function MetroDrawer({ metro, onClose, theme }) {
                   <YAxis tick={{ fill: subTxt, fontSize: 10 }} tickFormatter={v => `${(v / 1000).toFixed(0)}k`} />
                   <Tooltip contentStyle={tipStyle} labelFormatter={fmtDate} formatter={v => [v?.toLocaleString(), 'Employed']} />
                   <Line type="monotone" dataKey="value" stroke="#378ADD" strokeWidth={2} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {/* Zillow Charts */}
+          {(m.home_value_series || []).length > 1 && (
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: txt, marginBottom: 10 }}>Median Home Value — Zillow ZHVI</div>
+              <ResponsiveContainer width="100%" height={140}>
+                <LineChart data={m.home_value_series.slice(-24)} margin={{ top: 0, right: 0, left: -10, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
+                  <XAxis dataKey="date" tickFormatter={fmtDate} tick={{ fill: subTxt, fontSize: 10 }} />
+                  <YAxis tick={{ fill: subTxt, fontSize: 10 }} tickFormatter={v => `$${(v/1000).toFixed(0)}k`} />
+                  <Tooltip contentStyle={tipStyle} labelFormatter={fmtDate} formatter={v => [`$${Math.round(v).toLocaleString()}`, 'Home Value']} />
+                  <Line type="monotone" dataKey="value" stroke="#378ADD" strokeWidth={2} dot={false} />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          )}
+
+          {(m.rent_series || []).length > 1 && (
+            <div style={{ marginBottom: 20 }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: txt, marginBottom: 10 }}>Rent Index — Zillow ZORI</div>
+              <ResponsiveContainer width="100%" height={140}>
+                <LineChart data={m.rent_series.slice(-24)} margin={{ top: 0, right: 0, left: -10, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke={gridColor} />
+                  <XAxis dataKey="date" tickFormatter={fmtDate} tick={{ fill: subTxt, fontSize: 10 }} />
+                  <YAxis tick={{ fill: subTxt, fontSize: 10 }} tickFormatter={v => `$${Math.round(v)}`} />
+                  <Tooltip contentStyle={tipStyle} labelFormatter={fmtDate} formatter={v => [`$${Math.round(v).toLocaleString()}`, 'Rent Index']} />
+                  <Line type="monotone" dataKey="value" stroke="#7F77DD" strokeWidth={2} dot={false} />
                 </LineChart>
               </ResponsiveContainer>
             </div>

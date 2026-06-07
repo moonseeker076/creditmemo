@@ -84,11 +84,25 @@ def fetch_fred_series(series_id: str, limit: int = 36) -> Dict:
     return {"series_id": series_id, "observations": []}
 
 
-def compute_population_growth(cbsa: str, state: str) -> Optional[float]:
-    # Try state-level population growth from FRED as proxy
-    series_id = STATE_UNEMP_MAP.get(state)
+def compute_population_growth(cbsa: str) -> Optional[float]:
+    series_id = POP_SERIES_MAP.get(cbsa)
     if not series_id:
         return None
-    # We use unemployment as inverse proxy if no pop series available
-    # Return None to let composite use mock if needed
-    return None
+    data = fetch_fred_series(series_id, limit=24)
+    obs = data.get("observations", [])
+    if len(obs) < 2:
+        return None
+    # Annual series: compare last two observations
+    latest = obs[-1]["value"]
+    prior = obs[-2]["value"]
+    if prior == 0:
+        return None
+    return round((latest - prior) / prior * 100, 2)
+
+
+def get_population_series(cbsa: str) -> list:
+    series_id = POP_SERIES_MAP.get(cbsa)
+    if not series_id:
+        return []
+    data = fetch_fred_series(series_id, limit=24)
+    return data.get("observations", [])
