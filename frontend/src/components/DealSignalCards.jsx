@@ -1,5 +1,18 @@
 import { fmtPct } from '../utils/formatters.js'
 
+const getThesis = (m) => {
+  const pattern = m.analysis?.pattern
+  if (pattern === 'supply_pull') return 'Strong developer + job activity — new construction opportunity'
+  if (pattern === 'demand_surge') return 'Supply lagging demand — rent pressure building, strong acquisition play'
+  if (pattern === 'population_play') return 'Migration-driven demand — residential and retail follow-through expected'
+  if (pattern === 'jobs_led') return 'Employment leading — permit surge likely in next 6–12 months'
+  if (pattern === 'broad_momentum') return 'Balanced growth across all indicators — lower-risk entry point'
+  // fallback
+  if (m.permit_growth_yoy > 5 && m.employment_growth_yoy > 2) return 'Permits + jobs accelerating — strong demand pull'
+  if (m.permit_growth_yoy > 0 && m.employment_growth_yoy > 0) return 'Positive across all metrics — balanced growth'
+  return 'All three indicators above median — confirmed deal signal'
+}
+
 export default function DealSignalCards({ markets, theme }) {
   const isDark = theme === 'dark'
   const deals = markets.filter(m => m.deal_signal)
@@ -16,11 +29,7 @@ export default function DealSignalCards({ markets, theme }) {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(240px, 1fr))', gap: 14 }}>
         {deals.map(m => {
           const city = m.name.split(',')[0].split('–')[0]
-          const thesis = m.permit_growth_yoy > 5 && m.employment_growth_yoy > 2
-            ? 'Permits + jobs accelerating — strong demand pull'
-            : m.permit_growth_yoy > 0 && m.employment_growth_yoy > 0
-            ? 'Positive across all metrics — balanced growth'
-            : 'Emerging momentum across indicators'
+          const thesis = getThesis(m)
 
           return (
             <div key={m.id} style={{ background: bg, border: `1px solid ${border}`, borderRadius: 12, padding: '16px 18px' }}>

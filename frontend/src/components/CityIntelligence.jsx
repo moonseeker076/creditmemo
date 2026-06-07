@@ -1,11 +1,27 @@
 import { useState, useEffect } from 'react'
 
+const CITY_LINKS = {
+  blairsville_ga: [
+    { label: 'Blairsville City Council Minutes', url: 'https://www.blairsville-ga.gov/citycouncil' },
+    { label: 'Union County Commission Minutes', url: 'https://www.unioncountyga.gov/391/Commission-Meeting-Agendas-Minutes' },
+  ],
+  indianapolis_in: [
+    { label: 'Indianapolis City-County Council Minutes', url: 'https://www.indy.gov/activity/council-meeting-minutes' },
+    { label: 'Indianapolis Full Council Agendas', url: 'https://www.indy.gov/activity/council-meeting-agendas' },
+  ],
+  nashville_tn: [
+    { label: 'Nashville Metro Council Minutes', url: 'https://www.nashville.gov/departments/metro-clerk/legislative/minutes' },
+    { label: 'Nashville Planning Commission', url: 'https://www.nashville.gov/departments/planning' },
+  ],
+}
+
 const CATEGORY_COLORS = {
   permit_activity:    '#378ADD',
   retail_commercial:  '#1D9E75',
   residential:        '#7F77DD',
   infrastructure:     '#BA7517',
   economic_development: '#D85A30',
+  major_employer:     '#7F77DD',
 }
 
 const CATEGORY_ICONS = {
@@ -14,6 +30,7 @@ const CATEGORY_ICONS = {
   residential:        '🏘️',
   infrastructure:     '🛣️',
   economic_development: '💼',
+  major_employer:     '🏭',
 }
 
 const CATEGORY_LABELS = {
@@ -22,7 +39,10 @@ const CATEGORY_LABELS = {
   residential:        'Residential',
   infrastructure:     'Infrastructure',
   economic_development: 'Economic Development',
+  major_employer:     'Major Employer',
 }
+
+const ALL_CATEGORIES = ['permit_activity', 'retail_commercial', 'residential', 'infrastructure', 'economic_development', 'major_employer']
 
 export default function CityIntelligence({ theme }) {
   const isDark = theme === 'dark'
@@ -186,6 +206,53 @@ export default function CityIntelligence({ theme }) {
           <option value="value">Sort: Highest Value</option>
         </select>
       </div>
+
+      {/* Category Summary Grid */}
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 12, fontWeight: 700, color: sub, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>Signal Summary by Category</div>
+        {ALL_CATEGORIES.every(cat => allFindings.filter(f => f.category === cat).length === 0) ? (
+          <div style={{ padding: '14px 18px', background: bg, border: `1px solid ${border}`, borderRadius: 10, fontSize: 13, color: sub }}>
+            No signals detected in automated scan — review official minutes directly using the links below.
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 10 }}>
+            {ALL_CATEGORIES.map(cat => {
+              const count = allFindings.filter(f => f.category === cat).length
+              const color = CATEGORY_COLORS[cat] || '#888'
+              return (
+                <div key={cat} style={{
+                  background: color + '12', border: `1px solid ${color}30`, borderRadius: 10,
+                  padding: '12px 14px', cursor: count > 0 ? 'pointer' : 'default',
+                  opacity: count === 0 ? 0.45 : 1,
+                }} onClick={() => count > 0 && setActiveCategory(cat)}>
+                  <div style={{ fontSize: 20, marginBottom: 4 }}>{CATEGORY_ICONS[cat]}</div>
+                  <div style={{ fontSize: 11, color, fontWeight: 700, textTransform: 'uppercase', letterSpacing: 0.4, marginBottom: 2 }}>{CATEGORY_LABELS[cat]}</div>
+                  <div style={{ fontSize: 22, fontWeight: 800, color }}>{count}</div>
+                </div>
+              )
+            })}
+          </div>
+        )}
+      </div>
+
+      {/* Official Links */}
+      {CITY_LINKS[current.city_id] && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: sub, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>Official Sources</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {CITY_LINKS[current.city_id].map((link, i) => (
+              <a key={i} href={link.url} target="_blank" rel="noopener noreferrer" style={{
+                padding: '7px 14px', borderRadius: 8, border: `1px solid ${border}`,
+                background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
+                fontSize: 12, color: '#378ADD', textDecoration: 'none', fontWeight: 600,
+                display: 'inline-flex', alignItems: 'center', gap: 6,
+              }}>
+                🔗 {link.label}
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Cards */}
       {filtered.length === 0 ? (

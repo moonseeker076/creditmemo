@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict
 
 
 class TimePoint(BaseModel):
@@ -35,6 +35,8 @@ class MetroData(BaseModel):
     total_employment: Optional[float] = None
     population: Optional[int] = None
     median_income: Optional[float] = None
+
+    analysis: Optional[Dict] = None
 
 
 class SummaryData(BaseModel):

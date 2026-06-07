@@ -18,7 +18,7 @@ from data.cache import get_cached, set_cached, clear_cache, CACHE_DIR
 from data.scraper import scrape_all_cities, scrape_city, CITIES as SCRAPER_CITIES
 from data.census import fetch_permits_for_metro, compute_permit_growth, fetch_acs_data
 from data.bls import fetch_employment_series, compute_employment_growth
-from data.composite import compute_scores
+from data.composite import compute_scores, compute_trend, classify_market_pattern
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -53,6 +53,105 @@ METROS = [
 ]
 
 import random
+import httpx
+
+def _enrich_analysis(metros: List[MetroData]) -> None:
+    """Compute ranks and pattern classification for all metros in-place."""
+    sorted_by_permit = sorted(metros, key=lambda x: x.permit_growth_yoy or -999, reverse=True)
+    sorted_by_emp = sorted(metros, key=lambda x: x.employment_growth_yoy or -999, reverse=True)
+    sorted_by_pop = sorted(metros, key=lambda x: x.population_growth_yoy or -999, reverse=True)
+    sorted_by_composite = sorted(metros, key=lambda x: x.composite_score or 0, reverse=True)
+
+    permit_ranks = {m.id: i+1 for i, m in enumerate(sorted_by_permit)}
+    emp_ranks = {m.id: i+1 for i, m in enumerate(sorted_by_emp)}
+    pop_ranks = {m.id: i+1 for i, m in enumerate(sorted_by_pop)}
+    composite_ranks = {m.id: i+1 for i, m in enumerate(sorted_by_composite)}
+
+    total = len(metros)
+    for metro in metros:
+        pr = permit_ranks[metro.id]
+        er = emp_ranks[metro.id]
+        por = pop_ranks[metro.id]
+        cr = composite_ranks[metro.id]
+
+        permit_series = [p.model_dump() if hasattr(p, 'model_dump') else p for p in metro.permit_series]
+        emp_series = [p.model_dump() if hasattr(p, 'model_dump') else p for p in metro.employment_series]
+
+        permit_trend = compute_trend(permit_series)
+        emp_trend = compute_trend(emp_series)
+
+        pattern_info = classify_market_pattern(metro, pr, er, por, total)
+
+        metro.analysis = {
+            "permit_rank": pr,
+            "employment_rank": er,
+            "population_rank": por,
+            "composite_rank": cr,
+            "total_metros": total,
+            "permit_trend": permit_trend,
+            "employment_trend": emp_trend,
+            **pattern_info,
+            "recent_news": [],  # filled lazily per metro request
+        }
+
+
+async def fetch_recent_news(metro_name: str) -> list:
+    """Fetch recent development news for a metro using DuckDuckGo (no API key)."""
+    city = metro_name.split(",")[0].split("–")[0].strip()
+    queries = [
+        f"{city} new construction groundbreaking 2025",
+        f"{city} major employer expansion permit 2025",
+        f"{city} development project announced 2024 2025",
+    ]
+    news = []
+    seen_titles = set()
+
+    SIGNAL_WORDS = ["permit", "construction", "groundbreak", "development", "expansion",
+                    "headquarters", "warehouse", "apartment", "mixed-use", "invest",
+                    "million", "billion", "breaking ground", "facility", "campus"]
+
+    try:
+        async with httpx.AsyncClient(timeout=8, follow_redirects=True) as client:
+            for query in queries[:2]:  # limit to 2 queries
+                url = "https://api.duckduckgo.com/"
+                params = {"q": query, "format": "json", "no_html": "1", "skip_disambig": "1"}
+                try:
+                    resp = await client.get(url, params=params)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        # Check AbstractText
+                        if data.get("AbstractText") and len(data["AbstractText"]) > 50:
+                            title = data.get("Heading", query)
+                            if title not in seen_titles:
+                                seen_titles.add(title)
+                                news.append({
+                                    "title": title,
+                                    "snippet": data["AbstractText"][:200],
+                                    "url": data.get("AbstractURL", ""),
+                                    "source": data.get("AbstractSource", "DuckDuckGo"),
+                                })
+                        # Check RelatedTopics
+                        for topic in data.get("RelatedTopics", [])[:5]:
+                            if isinstance(topic, dict) and topic.get("Text"):
+                                text = topic["Text"]
+                                low = text.lower()
+                                if any(w in low for w in SIGNAL_WORDS):
+                                    title = text[:60]
+                                    if title not in seen_titles:
+                                        seen_titles.add(title)
+                                        news.append({
+                                            "title": title,
+                                            "snippet": text[:200],
+                                            "url": topic.get("FirstURL", ""),
+                                            "source": "DuckDuckGo",
+                                        })
+                except Exception as e:
+                    logger.warning(f"DDG query failed for {city}: {e}")
+    except Exception as e:
+        logger.warning(f"News fetch failed for {metro_name}: {e}")
+
+    return news[:5]
+
 
 def generate_seed_data() -> List[MetroData]:
     """Generate realistic mock data for frontend development."""
@@ -100,7 +199,9 @@ def generate_seed_data() -> List[MetroData]:
         )
         metros.append(metro)
 
-    return compute_scores(metros)
+    metros = compute_scores(metros)
+    _enrich_analysis(metros)
+    return metros
 
 
 async def refresh_all_data() -> List[MetroData]:
@@ -149,6 +250,7 @@ async def refresh_all_data() -> List[MetroData]:
             logger.error(f"Failed to fetch data for {m['name']}: {e}")
 
     metros = compute_scores(metros)
+    _enrich_analysis(metros)
     set_cached("all_markets", [m.model_dump() for m in metros])
     return metros
 
@@ -186,8 +288,17 @@ async def get_markets(region: Optional[str] = Query(None)):
 async def get_market(metro_id: str):
     for m in _markets_cache:
         if m.id == metro_id:
-            return m.model_dump()
-    return {"error": "Metro not found"}, 404
+            data = m.model_dump()
+            # Fetch news on demand (cached separately)
+            news_cache_key = f"news_{metro_id}"
+            news = get_cached(news_cache_key)
+            if news is None:
+                news = await fetch_recent_news(m.name)
+                set_cached(news_cache_key, news)
+            if data.get("analysis"):
+                data["analysis"]["recent_news"] = news
+            return data
+    return {"error": "Metro not found"}
 
 
 @app.get("/api/summary")
