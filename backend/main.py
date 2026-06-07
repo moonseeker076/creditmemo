@@ -15,7 +15,7 @@ load_dotenv()
 
 from data.models import MetroData, SummaryData
 from data.cache import get_cached, set_cached, clear_cache, CACHE_DIR
-from data.scraper import scrape_all_cities, scrape_city, CITIES as SCRAPER_CITIES
+from data.scraper import scrape_all_metros, scrape_city, CITIES as SCRAPER_CITIES
 from data.census import fetch_permits_for_metro, compute_permit_growth, fetch_acs_data
 from data.bls import fetch_employment_series, compute_employment_growth, fetch_unemployment_rate
 from data.composite import compute_scores, compute_trend, classify_market_pattern
@@ -364,7 +364,7 @@ _intelligence_refreshed: str = ""
 async def get_intelligence():
     global _intelligence_cache, _intelligence_refreshed
     if not _intelligence_cache:
-        _intelligence_cache = scrape_all_cities()
+        _intelligence_cache = scrape_all_metros()
         _intelligence_refreshed = datetime.utcnow().isoformat()
     return {"cities": _intelligence_cache, "last_refreshed": _intelligence_refreshed}
 

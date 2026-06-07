@@ -1,101 +1,97 @@
-import { useState, useEffect } from 'react'
-
-const CITY_LINKS = {
-  blairsville_ga: [
-    { label: 'Blairsville City Council Minutes', url: 'https://www.blairsville-ga.gov/citycouncil' },
-    { label: 'Union County Commission Minutes', url: 'https://www.unioncountyga.gov/391/Commission-Meeting-Agendas-Minutes' },
-  ],
-  indianapolis_in: [
-    { label: 'Indianapolis City-County Council Minutes', url: 'https://www.indy.gov/activity/council-meeting-minutes' },
-    { label: 'Indianapolis Full Council Agendas', url: 'https://www.indy.gov/activity/council-meeting-agendas' },
-  ],
-  nashville_tn: [
-    { label: 'Nashville Metro Council Minutes', url: 'https://www.nashville.gov/departments/metro-clerk/legislative/minutes' },
-    { label: 'Nashville Planning Commission', url: 'https://www.nashville.gov/departments/planning' },
-  ],
-}
+import { useState, useEffect, useMemo } from 'react'
 
 const CATEGORY_COLORS = {
-  permit_activity:    '#378ADD',
-  retail_commercial:  '#1D9E75',
-  residential:        '#7F77DD',
-  infrastructure:     '#BA7517',
+  permit_activity:      '#378ADD',
+  retail_commercial:    '#1D9E75',
+  residential:          '#7F77DD',
+  infrastructure:       '#BA7517',
   economic_development: '#D85A30',
-  major_employer:     '#7F77DD',
+  major_employer:       '#7F77DD',
 }
 
 const CATEGORY_ICONS = {
-  permit_activity:    '🏗️',
-  retail_commercial:  '🏢',
-  residential:        '🏘️',
-  infrastructure:     '🛣️',
+  permit_activity:      '🏗️',
+  retail_commercial:    '🏢',
+  residential:          '🏘️',
+  infrastructure:       '🛣️',
   economic_development: '💼',
-  major_employer:     '🏭',
+  major_employer:       '🏭',
 }
 
 const CATEGORY_LABELS = {
-  permit_activity:    'Permit Activity',
-  retail_commercial:  'Commercial Permit',
-  residential:        'Residential',
-  infrastructure:     'Infrastructure',
+  permit_activity:      'Permit Activity',
+  retail_commercial:    'Commercial Permit',
+  residential:          'Residential',
+  infrastructure:       'Infrastructure',
   economic_development: 'Economic Development',
-  major_employer:     'Major Employer',
+  major_employer:       'Major Employer',
 }
 
 const ALL_CATEGORIES = ['permit_activity', 'retail_commercial', 'residential', 'infrastructure', 'economic_development', 'major_employer']
 
 export default function CityIntelligence({ theme }) {
   const isDark = theme === 'dark'
-  const [data, setData]       = useState(null)
-  const [loading, setLoading] = useState(true)
-  const [error, setError]     = useState(null)
-  const [selectedCity, setSelectedCity] = useState(null)
+  const [data, setData]             = useState(null)
+  const [loading, setLoading]       = useState(true)
+  const [error, setError]           = useState(null)
+  const [selectedId, setSelectedId] = useState(null)
+  const [citySearch, setCitySearch] = useState('')
   const [activeCategory, setActiveCategory] = useState('all')
-  const [searchTerm, setSearchTerm] = useState('')
-  const [sortBy, setSortBy] = useState('date')
+  const [permitSearch, setPermitSearch]     = useState('')
+  const [sortBy, setSortBy]                 = useState('date')
 
   useEffect(() => {
     fetch('http://localhost:8000/api/intelligence')
       .then(r => r.json())
-      .then(d => { setData(d); setLoading(false) })
+      .then(d => {
+        setData(d)
+        setLoading(false)
+        if (d.cities?.length) setSelectedId(d.cities[0].city_id)
+      })
       .catch(e => { setError(e.message); setLoading(false) })
   }, [])
 
-  const txt    = isDark ? '#E8E8E8' : '#1A1A1A'
-  const bg     = isDark ? '#1A1D2E' : '#F7F7F7'
-  const border = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)'
-  const sub    = '#888'
+  const txt     = isDark ? '#E8E8E8' : '#1A1A1A'
+  const bg      = isDark ? '#1A1D2E' : '#F7F7F7'
+  const border  = isDark ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.08)'
+  const sub     = '#888'
   const inputBg = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.05)'
 
   if (loading) return (
     <div style={{ padding: 48, textAlign: 'center', color: sub }}>
       <div style={{ fontSize: 32, marginBottom: 12 }}>⏳</div>
-      Fetching live permit data from city open data portals…
+      Loading city intelligence data…
     </div>
   )
 
   if (error) return (
-    <div style={{ padding: 20, color: '#D85A30' }}>
-      Error loading intelligence: {error}
-    </div>
+    <div style={{ padding: 20, color: '#D85A30' }}>Error loading intelligence: {error}</div>
   )
 
-  const cities  = data?.cities || []
-  const current = selectedCity
-    ? cities.find(c => c.city_id === selectedCity)
-    : cities[0]
+  const cities = data?.cities || []
 
+  const filteredCities = useMemo(() => {
+    const q = citySearch.trim().toLowerCase()
+    if (!q) return cities
+    return cities.filter(c =>
+      c.city_name.toLowerCase().includes(q) ||
+      (c.state || '').toLowerCase().includes(q) ||
+      c.city_id.toLowerCase().includes(q)
+    )
+  }, [cities, citySearch])
+
+  const current = cities.find(c => c.city_id === selectedId) || cities[0]
   if (!current) return null
 
-  const allFindings = current.findings || []
-  const categories  = [...new Set(allFindings.map(f => f.category))]
+  const allFindings   = current.findings || []
+  const categories    = [...new Set(allFindings.map(f => f.category))]
+  const hasLiveData   = current.has_live_data
+  const officialLinks = current.official_links || []
 
-  let filtered = activeCategory === 'all'
-    ? allFindings
-    : allFindings.filter(f => f.category === activeCategory)
+  let filtered = activeCategory === 'all' ? allFindings : allFindings.filter(f => f.category === activeCategory)
 
-  if (searchTerm.trim()) {
-    const q = searchTerm.toLowerCase()
+  if (permitSearch.trim()) {
+    const q = permitSearch.toLowerCase()
     filtered = filtered.filter(f =>
       (f.snippet || '').toLowerCase().includes(q) ||
       (f.applicant || '').toLowerCase().includes(q) ||
@@ -114,38 +110,73 @@ export default function CityIntelligence({ theme }) {
     })
   }
 
+  const liveCount  = cities.filter(c => c.has_live_data && c.finding_count > 0).length
+  const totalCount = cities.length
+
   return (
     <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
-        <h3 style={{ color: txt, fontSize: 15, fontWeight: 700 }}>
-          🏛️ City Intelligence Feed — Live Permit Data
-        </h3>
+      {/* Header */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16, flexWrap: 'wrap', gap: 8 }}>
+        <div>
+          <h3 style={{ color: txt, fontSize: 15, fontWeight: 700, marginBottom: 2 }}>
+            🏛️ City Intelligence Feed
+          </h3>
+          <span style={{ fontSize: 12, color: sub }}>
+            {liveCount} of {totalCount} markets have live permit data · {cities.reduce((s, c) => s + (c.finding_count || 0), 0).toLocaleString()} total records
+          </span>
+        </div>
         <span style={{ fontSize: 12, color: sub }}>
           {data?.last_refreshed ? `Updated ${new Date(data.last_refreshed).toLocaleString()}` : ''}
         </span>
       </div>
 
-      {/* City tabs */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 16, flexWrap: 'wrap' }}>
-        {cities.map(city => {
-          const active = (selectedCity || cities[0]?.city_id) === city.city_id
-          return (
-            <button key={city.city_id}
-              onClick={() => { setSelectedCity(city.city_id); setActiveCategory('all'); setSearchTerm('') }}
-              style={{
-                padding: '8px 18px', borderRadius: 20, border: 'none', cursor: 'pointer',
-                fontWeight: 600, fontSize: 13, transition: 'all 0.15s',
-                background: active ? '#378ADD' : isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.06)',
-                color: active ? '#fff' : isDark ? '#C0C0C0' : '#444',
-              }}
-            >
-              {city.city_name}
-              <span style={{ marginLeft: 7, fontSize: 11, opacity: 0.75 }}>
-                {city.finding_count || 0} permits
-              </span>
-            </button>
-          )
-        })}
+      {/* City search + chip selector */}
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ position: 'relative', marginBottom: 10, maxWidth: 340 }}>
+          <input
+            type="text"
+            placeholder="Filter cities (Austin, Denver, Nashville…)"
+            value={citySearch}
+            onChange={e => setCitySearch(e.target.value)}
+            style={{
+              width: '100%', padding: '8px 32px 8px 12px', borderRadius: 8,
+              border: `1px solid ${border}`, background: inputBg,
+              color: txt, fontSize: 13, outline: 'none', boxSizing: 'border-box',
+            }}
+          />
+          {citySearch && (
+            <button onClick={() => setCitySearch('')} style={{
+              position: 'absolute', right: 8, top: '50%', transform: 'translateY(-50%)',
+              background: 'none', border: 'none', color: sub, cursor: 'pointer', fontSize: 14, lineHeight: 1,
+            }}>✕</button>
+          )}
+        </div>
+
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          {filteredCities.length === 0 ? (
+            <span style={{ fontSize: 13, color: sub, padding: '6px 0' }}>No cities match "{citySearch}"</span>
+          ) : filteredCities.map(city => {
+            const active   = city.city_id === current.city_id
+            const hasData  = city.has_live_data && city.finding_count > 0
+            const noApi    = !city.has_live_data
+            return (
+              <button key={city.city_id}
+                onClick={() => { setSelectedId(city.city_id); setActiveCategory('all'); setPermitSearch('') }}
+                style={{
+                  padding: '6px 14px', borderRadius: 20, border: 'none', cursor: 'pointer',
+                  fontWeight: 600, fontSize: 12, transition: 'all 0.15s', whiteSpace: 'nowrap',
+                  background: active ? '#378ADD' : isDark ? 'rgba(255,255,255,0.07)' : 'rgba(0,0,0,0.06)',
+                  color: active ? '#fff' : noApi ? (isDark ? '#777' : '#999') : (isDark ? '#C0C0C0' : '#444'),
+                }}
+              >
+                {city.city_name}
+                {hasData  && <span style={{ marginLeft: 6, fontSize: 10, opacity: 0.8 }}>{city.finding_count}</span>}
+                {!hasData && city.has_live_data && <span style={{ marginLeft: 6, fontSize: 10, opacity: 0.45 }}>0</span>}
+                {noApi    && <span style={{ marginLeft: 6, fontSize: 10, opacity: 0.4 }}>↗</span>}
+              </button>
+            )
+          })}
+        </div>
       </div>
 
       {/* Status bar */}
@@ -156,63 +187,38 @@ export default function CityIntelligence({ theme }) {
       }}>
         <div>
           <span style={{ color: sub, fontSize: 12 }}>Status: </span>
-          <span style={{ color: current.status === 'success' ? '#1D9E75' : '#BA7517', fontWeight: 600, fontSize: 13 }}>
-            {current.status === 'success' ? '✅ Live data' : '⚠️ Limited'}
-          </span>
-        </div>
-        <div>
-          <span style={{ color: sub, fontSize: 12 }}>Records: </span>
-          <span style={{ color: txt, fontWeight: 700, fontSize: 13 }}>{current.finding_count || 0}</span>
-        </div>
-        <div>
-          <span style={{ color: sub, fontSize: 12 }}>Source: </span>
-          <span style={{ color: txt, fontSize: 12 }}>
-            {current.city_id === 'nashville_tn'    ? 'data.nashville.gov — Socrata Open Data API' :
-             current.city_id === 'indianapolis_in' ? 'data.indy.gov — ArcGIS FeatureServer API'   :
-             'Blairsville City Council Minutes (PDF)'}
-          </span>
-        </div>
-      </div>
-
-      {/* Filters + search + sort */}
-      <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
-        <button onClick={() => setActiveCategory('all')}
-          style={pillStyle(activeCategory === 'all', isDark, '#7F77DD')}>
-          All ({allFindings.length})
-        </button>
-        {categories.map(cat => (
-          <button key={cat} onClick={() => setActiveCategory(cat)}
-            style={pillStyle(activeCategory === cat, isDark, CATEGORY_COLORS[cat] || '#888')}>
-            {CATEGORY_ICONS[cat] || '📋'} {CATEGORY_LABELS[cat] || cat} ({allFindings.filter(f => f.category === cat).length})
-          </button>
-        ))}
-        <input
-          type="text"
-          placeholder="Search applicant, address, type…"
-          value={searchTerm}
-          onChange={e => setSearchTerm(e.target.value)}
-          style={{
-            marginLeft: 'auto', padding: '6px 12px', borderRadius: 8,
-            border: `1px solid ${border}`, background: inputBg,
-            color: txt, fontSize: 13, width: 220, outline: 'none',
-          }}
-        />
-        <select value={sortBy} onChange={e => setSortBy(e.target.value)}
-          style={{
-            padding: '6px 10px', borderRadius: 8, border: `1px solid ${border}`,
-            background: inputBg, color: txt, fontSize: 13, cursor: 'pointer',
+          <span style={{
+            color: current.status === 'success' ? '#1D9E75' : hasLiveData ? '#BA7517' : '#888',
+            fontWeight: 600, fontSize: 13,
           }}>
-          <option value="date">Sort: Newest</option>
-          <option value="value">Sort: Highest Value</option>
-        </select>
+            {current.status === 'success' ? '✅ Live data'
+              : hasLiveData ? '⚠️ API available, 0 records'
+              : '🔗 Official links only'}
+          </span>
+        </div>
+        {hasLiveData && (
+          <div>
+            <span style={{ color: sub, fontSize: 12 }}>Records: </span>
+            <span style={{ color: txt, fontWeight: 700, fontSize: 13 }}>{current.finding_count || 0}</span>
+          </div>
+        )}
+        {!hasLiveData && (
+          <span style={{ fontSize: 12, color: sub }}>
+            No public permit API for this metro — use the official links below to access records directly.
+          </span>
+        )}
       </div>
 
-      {/* Category Summary Grid */}
+      {/* Category summary */}
       <div style={{ marginBottom: 16 }}>
-        <div style={{ fontSize: 12, fontWeight: 700, color: sub, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>Signal Summary by Category</div>
-        {ALL_CATEGORIES.every(cat => allFindings.filter(f => f.category === cat).length === 0) ? (
+        <div style={{ fontSize: 12, fontWeight: 700, color: sub, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>
+          Signal Summary by Category
+        </div>
+        {!hasLiveData || ALL_CATEGORIES.every(cat => allFindings.filter(f => f.category === cat).length === 0) ? (
           <div style={{ padding: '14px 18px', background: bg, border: `1px solid ${border}`, borderRadius: 10, fontSize: 13, color: sub }}>
-            No signals detected in automated scan — review official minutes directly using the links below.
+            {hasLiveData
+              ? 'No signals detected — review official sources using the links below.'
+              : 'No live data. Use the official links below to access permit records and council minutes directly.'}
           </div>
         ) : (
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(140px, 1fr))', gap: 10 }}>
@@ -235,12 +241,14 @@ export default function CityIntelligence({ theme }) {
         )}
       </div>
 
-      {/* Official Links */}
-      {CITY_LINKS[current.city_id] && (
+      {/* Official links — always shown */}
+      {officialLinks.length > 0 && (
         <div style={{ marginBottom: 16 }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: sub, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>Official Sources</div>
+          <div style={{ fontSize: 12, fontWeight: 700, color: sub, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 10 }}>
+            Official Sources
+          </div>
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            {CITY_LINKS[current.city_id].map((link, i) => (
+            {officialLinks.map((link, i) => (
               <a key={i} href={link.url} target="_blank" rel="noopener noreferrer" style={{
                 padding: '7px 14px', borderRadius: 8, border: `1px solid ${border}`,
                 background: isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.04)',
@@ -254,19 +262,53 @@ export default function CityIntelligence({ theme }) {
         </div>
       )}
 
-      {/* Cards */}
-      {filtered.length === 0 ? (
-        <div style={{ padding: 40, textAlign: 'center', color: sub, background: bg, borderRadius: 10, border: `1px solid ${border}` }}>
-          {current.status !== 'success'
-            ? 'No data returned. Try refreshing or check that the backend is running.'
-            : 'No permits match your search or filter.'}
-        </div>
-      ) : (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {filtered.map((f, i) => (
-            <PermitCard key={i} f={f} isDark={isDark} txt={txt} bg={bg} border={border} sub={sub} />
-          ))}
-        </div>
+      {/* Permit cards — only when live data is present */}
+      {hasLiveData && allFindings.length > 0 && (
+        <>
+          <div style={{ display: 'flex', gap: 8, marginBottom: 14, flexWrap: 'wrap', alignItems: 'center' }}>
+            <button onClick={() => setActiveCategory('all')}
+              style={pillStyle(activeCategory === 'all', isDark, '#7F77DD')}>
+              All ({allFindings.length})
+            </button>
+            {categories.map(cat => (
+              <button key={cat} onClick={() => setActiveCategory(cat)}
+                style={pillStyle(activeCategory === cat, isDark, CATEGORY_COLORS[cat] || '#888')}>
+                {CATEGORY_ICONS[cat] || '📋'} {CATEGORY_LABELS[cat] || cat} ({allFindings.filter(f => f.category === cat).length})
+              </button>
+            ))}
+            <input
+              type="text"
+              placeholder="Search applicant, address, type…"
+              value={permitSearch}
+              onChange={e => setPermitSearch(e.target.value)}
+              style={{
+                marginLeft: 'auto', padding: '6px 12px', borderRadius: 8,
+                border: `1px solid ${border}`, background: inputBg,
+                color: txt, fontSize: 13, width: 220, outline: 'none',
+              }}
+            />
+            <select value={sortBy} onChange={e => setSortBy(e.target.value)}
+              style={{
+                padding: '6px 10px', borderRadius: 8, border: `1px solid ${border}`,
+                background: inputBg, color: txt, fontSize: 13, cursor: 'pointer',
+              }}>
+              <option value="date">Sort: Newest</option>
+              <option value="value">Sort: Highest Value</option>
+            </select>
+          </div>
+
+          {filtered.length === 0 ? (
+            <div style={{ padding: 40, textAlign: 'center', color: sub, background: bg, borderRadius: 10, border: `1px solid ${border}` }}>
+              No permits match your search or filter.
+            </div>
+          ) : (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+              {filtered.map((f, i) => (
+                <PermitCard key={i} f={f} isDark={isDark} txt={txt} bg={bg} border={border} sub={sub} />
+              ))}
+            </div>
+          )}
+        </>
       )}
     </div>
   )
@@ -288,30 +330,19 @@ function PermitCard({ f, isDark, txt, bg, border, sub }) {
           <span style={{ fontSize: 11, fontWeight: 700, color, textTransform: 'uppercase', letterSpacing: 0.5 }}>{label}</span>
           {f.permit_number && <span style={{ fontSize: 11, color: sub }}>#{f.permit_number}</span>}
         </div>
-
-        {f.applicant && (
-          <div style={{ fontSize: 14, fontWeight: 700, color: txt, marginBottom: 3 }}>{f.applicant}</div>
-        )}
-
+        {f.applicant && <div style={{ fontSize: 14, fontWeight: 700, color: txt, marginBottom: 3 }}>{f.applicant}</div>}
         {(f.permit_type || f.work_class) && (
           <div style={{ fontSize: 13, color: sub, marginBottom: f.address ? 3 : 0 }}>
             {[f.permit_type, f.work_class].filter(Boolean).join(' · ')}
           </div>
         )}
-
-        {f.address && (
-          <div style={{ fontSize: 12, color: sub }}>📍 {f.address}</div>
-        )}
-
+        {f.address && <div style={{ fontSize: 12, color: sub }}>📍 {f.address}</div>}
         {!f.applicant && !f.address && f.snippet && (
           <p style={{ fontSize: 13, color: txt, lineHeight: 1.6, margin: 0 }}>{f.snippet}</p>
         )}
       </div>
-
       <div style={{ textAlign: 'right', flexShrink: 0 }}>
-        {f.value && (
-          <div style={{ fontSize: 16, fontWeight: 800, color: '#1D9E75', marginBottom: 4 }}>{f.value}</div>
-        )}
+        {f.value && <div style={{ fontSize: 16, fontWeight: 800, color: '#1D9E75', marginBottom: 4 }}>{f.value}</div>}
         {f.date && (
           <div style={{ fontSize: 11, color: sub }}>
             {new Date(f.date + 'T00:00:00Z').toLocaleDateString('en-US',

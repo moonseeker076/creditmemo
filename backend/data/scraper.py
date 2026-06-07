@@ -7,26 +7,6 @@ from .cache import get_cached, set_cached
 
 logger = logging.getLogger(__name__)
 
-# ─── Nashville ArcGIS Hub (migrated from Socrata) ────────────────────────────
-# Nashville moved from Socrata to ArcGIS Hub. Use BLDS partner portal + ArcGIS Hub GeoJSON
-NASHVILLE_BLDS_URL   = "https://permits.partner.socrata.com/resource/7ky7-xbzp.json"
-NASHVILLE_ARCGIS_URL = "https://services2.arcgis.com/HdTo6HJqh92wn4D8/arcgis/rest/services/Building_Permits_Issued/FeatureServer/0/query"
-NASHVILLE_GEOJSON    = "https://opendata.arcgis.com/datasets/2576bfb2d74f418b8ba8c4538e4f729f_0.geojson"
-
-# ─── Indianapolis ArcGIS FeatureServer ───────────────────────────────────────
-INDY_PERMITS_URL = (
-    "https://services6.arcgis.com/ONZht79c8QWuX759/arcgis/rest"
-    "/services/Building_Permits/FeatureServer/0/query"
-)
-
-# ─── Blairsville GA — HTML pages (PDFs blocked by server) ────────────────────
-BLAIRSVILLE_PAGES = [
-    "https://www.blairsville-ga.gov/citycouncil",
-    "https://www.blairsville-ga.gov/document-library",
-    "https://www.blairsville-ga.gov/meetings",
-    "https://www.unioncountyga.gov/391/Commission-Meeting-Agendas-Minutes",
-]
-
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -41,7 +21,6 @@ COMMERCIAL_TYPES = {
     "mixed use", "mixed-use", "restaurant", "institutional", "assembly",
     "factory", "manufacturing", "storage", "distribution",
 }
-
 RESIDENTIAL_TYPES = {
     "residential", "single family", "multi family", "multifamily",
     "apartment", "townhouse", "townhome", "duplex", "condo",
@@ -73,221 +52,363 @@ def fmt_value(val) -> Optional[str]:
         return None
 
 
-# ─── Nashville ────────────────────────────────────────────────────────────────
+# ─── City configurations for all 24 metros ───────────────────────────────────
+# type: "socrata" | "arcgis" | "none"
+# Field mappings tell the generic fetcher which API fields map to our schema.
+CITY_CONFIGS: Dict[str, Dict] = {
+    "nashville": {
+        "name": "Nashville–Davidson, TN", "state": "TN",
+        "type": "arcgis",
+        "url": "https://services2.arcgis.com/HdTo6HJqh92wn4D8/arcgis/rest/services/Building_Permits_Issued/FeatureServer/0/query",
+        "fields": {"address": "address", "permit_type": "permit_type", "work_class": "work_class",
+                   "applicant": "applicant_name", "value": "const_cost", "date": "permit_issued_dt",
+                   "permit_number": "permit_number", "description": "description"},
+        "date_format": "iso",
+        "official_links": [
+            {"label": "Nashville Metro Council Minutes", "url": "https://www.nashville.gov/departments/metro-clerk/legislative/minutes"},
+            {"label": "Nashville Open Data Permits", "url": "https://data.nashville.gov/Building-Codes-Permits/Building-Permits-Issued/3h5w-q8b7"},
+        ],
+    },
+    "indianapolis": {
+        "name": "Indianapolis, IN", "state": "IN",
+        "type": "arcgis",
+        "url": "https://services6.arcgis.com/ONZht79c8QWuX759/arcgis/rest/services/Building_Permits/FeatureServer/0/query",
+        "fields": {"address": "address", "permit_type": "work_type", "applicant": "applicant_name",
+                   "value": "declared_value", "date": "issue_date", "permit_number": "permit_num",
+                   "description": "description"},
+        "date_format": "epoch_ms",
+        "official_links": [
+            {"label": "Indianapolis City-County Council Minutes", "url": "https://www.indy.gov/activity/council-meeting-minutes"},
+            {"label": "Indianapolis Building Permits", "url": "https://www.indy.gov/activity/building-permit-applications"},
+        ],
+    },
+    "austin": {
+        "name": "Austin–Round Rock, TX", "state": "TX",
+        "type": "socrata",
+        "url": "https://data.austintexas.gov/resource/3syk-w9eu.json",
+        "fields": {"address": "address", "permit_type": "permit_type_desc", "work_class": "work_class",
+                   "applicant": "applicant_company_name", "value": "total_valuation",
+                   "date": "issued_date", "permit_number": "permit_num", "description": "description"},
+        "official_links": [
+            {"label": "Austin City Council", "url": "https://www.austintexas.gov/cityclerk/minutes"},
+            {"label": "Austin Permits Open Data", "url": "https://data.austintexas.gov/Building-and-Development/Issued-Construction-Permits/3syk-w9eu"},
+        ],
+    },
+    "dallas": {
+        "name": "Dallas–Fort Worth, TX", "state": "TX",
+        "type": "socrata",
+        "url": "https://www.dallasopendata.com/resource/m6e4-hchc.json",
+        "fields": {"address": "address", "permit_type": "permit_type", "work_class": "work_class",
+                   "value": "declared_valuation", "date": "issue_date", "permit_number": "permit_num",
+                   "description": "description"},
+        "official_links": [
+            {"label": "Dallas City Council Minutes", "url": "https://dallascityhall.com/government/Council/Pages/CityCouncilMinutes.aspx"},
+            {"label": "Dallas Building Permits", "url": "https://www.dallasopendata.com/Building-Inspection/Building-Permits/gjzp-s8h2"},
+        ],
+    },
+    "denver": {
+        "name": "Denver, CO", "state": "CO",
+        "type": "socrata",
+        "url": "https://data.denvergov.org/resource/zfh8-bznb.json",
+        "fields": {"address": "address", "permit_type": "permit_type_name", "work_class": "work_class_name",
+                   "applicant": "applicant_name", "value": "job_value",
+                   "date": "issued_date", "permit_number": "permit_no", "description": "description"},
+        "official_links": [
+            {"label": "Denver City Council Minutes", "url": "https://www.denvergov.org/Government/City-Council/Meeting-Minutes"},
+            {"label": "Denver Permits Open Data", "url": "https://opendata-geospatialdenver.hub.arcgis.com/datasets/zfh8bznb"},
+        ],
+    },
+    "raleigh": {
+        "name": "Raleigh–Durham, NC", "state": "NC",
+        "type": "socrata",
+        "url": "https://data.raleighnc.gov/resource/gpby-65dg.json",
+        "fields": {"address": "address", "permit_type": "permit_type", "work_class": "work_class",
+                   "applicant": "contractor_company_name", "value": "job_value",
+                   "date": "issued_date", "permit_number": "permit_num", "description": "description"},
+        "official_links": [
+            {"label": "Raleigh City Council Minutes", "url": "https://raleighnc.gov/City-Council/Minutes"},
+            {"label": "Raleigh Permits Open Data", "url": "https://data.raleighnc.gov/Development/Permits/gpby-65dg"},
+        ],
+    },
+    "charlotte": {
+        "name": "Charlotte, NC", "state": "NC",
+        "type": "socrata",
+        "url": "https://data.charlottenc.gov/resource/c3xk-edgv.json",
+        "fields": {"address": "location", "permit_type": "permit_type", "work_class": "work_class",
+                   "applicant": "applicant", "value": "job_cost",
+                   "date": "issue_date", "permit_number": "permit_number", "description": "description"},
+        "official_links": [
+            {"label": "Charlotte City Council Minutes", "url": "https://charlottenc.gov/mayorcouncil/minutes"},
+            {"label": "Charlotte Permits Open Data", "url": "https://data.charlottenc.gov/d/c3xk-edgv"},
+        ],
+    },
+    # ── Cities without confirmed open data APIs ───────────────────────────────
+    "boise": {
+        "name": "Boise City, ID", "state": "ID", "type": "none",
+        "official_links": [
+            {"label": "Boise City Council Minutes", "url": "https://www.cityofboise.org/departments/city-clerk/city-council/minutes-agendas/"},
+            {"label": "Boise Open Data Portal", "url": "https://opendata.cityofboise.org/"},
+        ],
+    },
+    "phoenix": {
+        "name": "Phoenix–Mesa, AZ", "state": "AZ", "type": "none",
+        "official_links": [
+            {"label": "Phoenix City Council Minutes", "url": "https://www.phoenix.gov/cityclerk/publicmeetings/council-meetings"},
+            {"label": "Phoenix Permits Portal", "url": "https://www.phoenix.gov/pdd/permitting"},
+        ],
+    },
+    "jacksonville": {
+        "name": "Jacksonville, FL", "state": "FL", "type": "none",
+        "official_links": [
+            {"label": "Jacksonville City Council Minutes", "url": "https://www.coj.net/departments/city-council/minutes.aspx"},
+            {"label": "Jacksonville Development Services", "url": "https://www.coj.net/departments/planning-and-development"},
+        ],
+    },
+    "columbus": {
+        "name": "Columbus, OH", "state": "OH", "type": "none",
+        "official_links": [
+            {"label": "Columbus City Council Minutes", "url": "https://www.columbus.gov/council/minutes/"},
+            {"label": "Columbus Open Data", "url": "https://opendata.columbus.gov/"},
+        ],
+    },
+    "san_antonio": {
+        "name": "San Antonio, TX", "state": "TX", "type": "none",
+        "official_links": [
+            {"label": "San Antonio City Council Minutes", "url": "https://www.sanantonio.gov/Clerk/CouncilMeetingInfo/Agendas-Minutes"},
+            {"label": "San Antonio Development", "url": "https://www.sanantonio.gov/DSD"},
+        ],
+    },
+    "atlanta": {
+        "name": "Atlanta, GA", "state": "GA", "type": "none",
+        "official_links": [
+            {"label": "Atlanta City Council Minutes", "url": "https://citycouncil.atlantaga.gov/council-meetings/minutes"},
+            {"label": "Atlanta Open Data", "url": "https://opendata.atlantaga.gov/"},
+        ],
+    },
+    "tampa": {
+        "name": "Tampa–St. Pete, FL", "state": "FL", "type": "none",
+        "official_links": [
+            {"label": "Tampa City Council Minutes", "url": "https://www.tampagov.net/city-clerk/meetings-minutes"},
+            {"label": "Tampa Permits Portal", "url": "https://permits.tampagov.net/"},
+        ],
+    },
+    "salt_lake": {
+        "name": "Salt Lake City, UT", "state": "UT", "type": "none",
+        "official_links": [
+            {"label": "Salt Lake City Council Minutes", "url": "https://www.slccouncil.com/meeting-minutes"},
+            {"label": "SLC Permits Portal", "url": "https://permits.slcgov.com/"},
+        ],
+    },
+    "las_vegas": {
+        "name": "Las Vegas, NV", "state": "NV", "type": "none",
+        "official_links": [
+            {"label": "Las Vegas City Council Minutes", "url": "https://www.lasvegasnevada.gov/Government/Mayor-City-Council/Minutes"},
+            {"label": "Clark County Development", "url": "https://www.clarkcountynv.gov/government/departments/building_department"},
+        ],
+    },
+    "orlando": {
+        "name": "Orlando, FL", "state": "FL", "type": "none",
+        "official_links": [
+            {"label": "Orlando City Council Minutes", "url": "https://cityoforlando.net/cityclerk/city-council/minutes/"},
+            {"label": "Orlando Permits Portal", "url": "https://cityoforlando.net/building/"},
+        ],
+    },
+    "richmond": {
+        "name": "Richmond, VA", "state": "VA", "type": "none",
+        "official_links": [
+            {"label": "Richmond City Council Minutes", "url": "https://www.rva.gov/city-clerk/city-council-minutes"},
+            {"label": "Richmond Permits", "url": "https://www.rva.gov/permits-inspections"},
+        ],
+    },
+    "greenville": {
+        "name": "Greenville, SC", "state": "SC", "type": "none",
+        "official_links": [
+            {"label": "Greenville City Council Minutes", "url": "https://www.greenvillesc.gov/AgendaCenter"},
+            {"label": "Greenville Permits", "url": "https://www.greenvillesc.gov/174/Building-Safety"},
+        ],
+    },
+    "huntsville": {
+        "name": "Huntsville, AL", "state": "AL", "type": "none",
+        "official_links": [
+            {"label": "Huntsville City Council Minutes", "url": "https://www.huntsvilleal.gov/government/city-council/meeting-minutes/"},
+            {"label": "Huntsville Permits", "url": "https://www.huntsvilleal.gov/development/"},
+        ],
+    },
+    "spokane": {
+        "name": "Spokane, WA", "state": "WA", "type": "none",
+        "official_links": [
+            {"label": "Spokane City Council Minutes", "url": "https://my.spokanecity.org/citycouncil/minutes/"},
+            {"label": "Spokane Permits Portal", "url": "https://my.spokanecity.org/bldgsvcs/permits/"},
+        ],
+    },
+    "tucson": {
+        "name": "Tucson, AZ", "state": "AZ", "type": "none",
+        "official_links": [
+            {"label": "Tucson City Council Minutes", "url": "https://www.tucsonaz.gov/Departments/City-Clerk/City-Council/Minutes"},
+            {"label": "Tucson Permits Portal", "url": "https://www.tucsonaz.gov/Departments/Planning-and-Development-Services"},
+        ],
+    },
+    "albuquerque": {
+        "name": "Albuquerque, NM", "state": "NM", "type": "none",
+        "official_links": [
+            {"label": "Albuquerque City Council Minutes", "url": "https://www.cabq.gov/council/minutes"},
+            {"label": "Albuquerque Permits", "url": "https://www.cabq.gov/planning/building-safety"},
+        ],
+    },
+    "oklahoma_city": {
+        "name": "Oklahoma City, OK", "state": "OK", "type": "none",
+        "official_links": [
+            {"label": "OKC City Council Minutes", "url": "https://www.okc.gov/government/city-council/agendas-minutes"},
+            {"label": "OKC Development Services", "url": "https://www.okc.gov/departments/development-services"},
+        ],
+    },
+}
 
-def fetch_nashville_permits(days_back: int = 180) -> List[Dict]:
-    cache_key = "open_data_nashville"
+
+# ─── Generic Socrata fetcher ──────────────────────────────────────────────────
+
+def fetch_socrata_permits(metro_id: str, config: Dict, limit: int = 200) -> List[Dict]:
+    cache_key = f"open_data_{metro_id}"
     cached = get_cached(cache_key)
-    if cached:
+    if cached is not None:
         return cached
 
-    findings = []
+    url = config["url"]
+    field_map = config.get("fields", {})
+    source_name = f"{config['name']} Open Data"
 
-    # Try 1: BLDS partner Socrata portal (separate from main data.nashville.gov)
+    findings = []
+    params = {"$limit": limit, "$order": f"{field_map.get('date', 'issued_date')} DESC"}
+
     try:
         with httpx.Client(timeout=20, headers=HEADERS, follow_redirects=True) as client:
-            resp = client.get(NASHVILLE_BLDS_URL, params={"$limit": 200, "$order": "issued_date DESC"})
-            logger.info(f"Nashville BLDS: HTTP {resp.status_code}, {len(resp.content)} bytes")
+            resp = client.get(url, params=params)
+            logger.info(f"{metro_id} Socrata: HTTP {resp.status_code}, {len(resp.content)} bytes")
             if resp.status_code == 200:
                 rows = resp.json()
-                logger.info(f"Nashville BLDS: {len(rows)} rows, keys: {list(rows[0].keys()) if rows else 'empty'}")
+                logger.info(f"{metro_id}: {len(rows)} rows")
                 for row in rows:
-                    finding = _nashville_row_to_finding(row, "BLDS Permit")
+                    finding = _generic_row_to_finding(row, field_map, source_name, "iso")
                     if finding:
                         findings.append(finding)
     except Exception as e:
-        logger.warning(f"Nashville BLDS failed: {e}")
+        logger.warning(f"{metro_id} Socrata fetch failed: {e}")
 
-    # Try 2: ArcGIS Hub FeatureServer
-    if not findings:
-        try:
-            with httpx.Client(timeout=20, headers=HEADERS, follow_redirects=True) as client:
-                params = {"where": "1=1", "outFields": "*", "resultRecordCount": 200,
-                          "orderByFields": "OBJECTID DESC", "f": "json"}
-                resp = client.get(NASHVILLE_ARCGIS_URL, params=params)
-                logger.info(f"Nashville ArcGIS: HTTP {resp.status_code}, {len(resp.content)} bytes, body: {resp.text[:300]}")
-                if resp.status_code == 200:
-                    data = resp.json()
-                    for feat in data.get("features", []):
-                        finding = _nashville_row_to_finding(feat.get("attributes", {}), "ArcGIS Permit")
-                        if finding:
-                            findings.append(finding)
-        except Exception as e:
-            logger.warning(f"Nashville ArcGIS failed: {e}")
-
-    logger.info(f"Nashville total findings: {len(findings)}")
     set_cached(cache_key, findings)
     return findings
 
 
-def _nashville_row_to_finding(row: dict, source_type: str) -> Optional[Dict]:
-    permit_type  = row.get("permit_type", "")
-    work_class   = row.get("work_class", "")
-    description  = row.get("description", "") or row.get("permit_subtype", "")
-    applicant    = row.get("applicant_name", "") or row.get("owner", "")
-    address      = row.get("address", "")
-    const_cost   = row.get("const_cost", 0)
-    date_raw     = row.get("permit_issued_dt") or row.get("application_date", "")
-    permit_num   = row.get("permit_number", "") or row.get("permit_num", "")
-    status       = row.get("status", "")
+# ─── Generic ArcGIS fetcher ───────────────────────────────────────────────────
 
-    # Accept rows that have at least an address or permit type
-    if not address and not permit_type and not applicant:
-        return None
-
-    category = classify_permit(permit_type, work_class, description)
-    value_str = fmt_value(const_cost)
-
-    parts = []
-    if applicant:
-        parts.append(applicant)
-    if permit_type:
-        parts.append(permit_type.title())
-    if work_class:
-        parts.append(f"({work_class.title()})")
-    if description:
-        parts.append(f"— {description[:80]}")
-    if address:
-        parts.append(f"at {address}")
-    if value_str:
-        parts.append(f"| Value: {value_str}")
-    if status:
-        parts.append(f"| Status: {status}")
-
-    snippet = " ".join(parts) or f"Permit at {address or 'unknown location'}"
-    date_str = date_raw[:10] if date_raw else ""
-
-    return {
-        "category": "permit_activity" if category != "commercial" else "retail_commercial",
-        "category_label": "Permit Activity" if category == "residential" else "Commercial Permit",
-        "keyword": permit_type,
-        "snippet": snippet,
-        "source": f"Nashville Open Data — {source_type}",
-        "date": date_str,
-        "value": value_str,
-        "address": address,
-        "applicant": applicant,
-        "permit_type": permit_type,
-        "work_class": work_class,
-        "permit_number": permit_num,
-    }
-
-
-# ─── Indianapolis ─────────────────────────────────────────────────────────────
-
-def fetch_indianapolis_permits(days_back: int = 180) -> List[Dict]:
-    cache_key = "open_data_indianapolis"
+def fetch_arcgis_permits(metro_id: str, config: Dict, limit: int = 200) -> List[Dict]:
+    cache_key = f"open_data_{metro_id}"
     cached = get_cached(cache_key)
-    if cached:
+    if cached is not None:
         return cached
 
+    url = config["url"]
+    field_map = config.get("fields", {})
+    date_format = config.get("date_format", "iso")
+    source_name = f"{config['name']} Open Data"
+
     findings = []
-    params = {
-        "where": "1=1",
-        "outFields": "*",
-        "resultRecordCount": 200,
-        "orderByFields": "OBJECTID DESC",
-        "f": "json",
-    }
+    params = {"where": "1=1", "outFields": "*", "resultRecordCount": limit,
+              "orderByFields": "OBJECTID DESC", "f": "json"}
+
     try:
-        with httpx.Client(timeout=25, headers=HEADERS) as client:
-            resp = client.get(INDY_PERMITS_URL, params=params)
-            logger.info(f"Indianapolis permits: HTTP {resp.status_code}, {len(resp.content)} bytes")
+        with httpx.Client(timeout=25, headers=HEADERS, follow_redirects=True) as client:
+            resp = client.get(url, params=params)
+            logger.info(f"{metro_id} ArcGIS: HTTP {resp.status_code}, {len(resp.content)} bytes")
             if resp.status_code == 200:
                 data = resp.json()
-                # Log full body if empty — helps diagnose ArcGIS errors
-                if "error" in data or not data.get("features"):
-                    logger.warning(f"Indianapolis full response: {resp.text[:500]}")
                 features = data.get("features", [])
-                logger.info(f"Indianapolis: got {len(features)} features")
-                if features:
-                    sample_attrs = features[0].get("attributes", {})
-                    logger.info(f"Indianapolis first record keys: {list(sample_attrs.keys())}")
-                    logger.info(f"Indianapolis first record: {dict(list(sample_attrs.items())[:8])}")
+                logger.info(f"{metro_id}: {len(features)} features")
                 for feat in features:
                     attrs = feat.get("attributes", {})
-                    finding = _indy_row_to_finding(attrs)
+                    finding = _generic_row_to_finding(attrs, field_map, source_name, date_format)
                     if finding:
                         findings.append(finding)
-            else:
-                logger.warning(f"Indianapolis API error: {resp.status_code} {resp.text[:200]}")
     except Exception as e:
-        logger.warning(f"Indianapolis permits fetch failed: {e}")
+        logger.warning(f"{metro_id} ArcGIS fetch failed: {e}")
 
-    logger.info(f"Indianapolis total findings: {len(findings)}")
     set_cached(cache_key, findings)
     return findings
 
 
-def _indy_row_to_finding(attrs: dict) -> Optional[Dict]:
-    # Field names vary — try multiple candidates
-    def get(*keys):
-        for k in keys:
-            v = attrs.get(k) or attrs.get(k.upper()) or attrs.get(k.lower())
-            if v and str(v).strip() not in ("None", "null", "0"):
-                return str(v).strip()
-        return ""
+# ─── Generic row → finding ────────────────────────────────────────────────────
 
-    permit_num   = get("permit_num", "PERMIT_NUM", "PermitNumber", "permit_number")
-    description  = get("description", "DESCRIPTION", "Description", "work_description")
-    address      = get("address", "ADDRESS", "location_address", "street_address")
-    street_num   = get("street_num", "STREET_NUM")
-    street_name  = get("street_name", "STREET_NAME")
-    work_type    = get("work_type", "WORK_TYPE", "WorkType", "permit_type")
-    status       = get("status", "STATUS", "Status")
-    declared_val = get("declared_value", "DECLARED_VALUE", "const_cost", "job_value")
-    applicant    = get("applicant_name", "APPLICANT_NAME", "contractor_name", "owner_name")
-    issue_ts     = attrs.get("issue_date") or attrs.get("ISSUE_DATE") or attrs.get("added_date")
+def _generic_row_to_finding(row: dict, field_map: dict, source: str, date_format: str) -> Optional[Dict]:
+    def get(mapped_key: str) -> str:
+        api_field = field_map.get(mapped_key, mapped_key)
+        val = row.get(api_field) or row.get(api_field.upper()) or row.get(api_field.lower())
+        return str(val).strip() if val and str(val).strip() not in ("None", "null", "0") else ""
 
-    full_address = address or f"{street_num} {street_name}".strip()
-    if not full_address and not description and not work_type:
+    address     = get("address")
+    permit_type = get("permit_type")
+    work_class  = get("work_class")
+    applicant   = get("applicant")
+    description = get("description")
+    permit_num  = get("permit_number")
+    raw_date    = row.get(field_map.get("date", "issued_date"), "")
+    raw_value   = row.get(field_map.get("value", "job_value"), "")
+
+    if not address and not permit_type and not description:
         return None
 
-    value_str = fmt_value(declared_val) if declared_val else None
-    category  = classify_permit(work_type, "", description)
+    category  = classify_permit(permit_type, work_class, description)
+    value_str = fmt_value(raw_value) if raw_value else None
 
-    # Parse timestamp (ArcGIS returns epoch ms)
+    # Date parsing
     date_str = ""
-    if issue_ts:
-        try:
-            date_str = datetime.utcfromtimestamp(int(issue_ts) / 1000).strftime("%Y-%m-%d")
-        except Exception:
-            pass
+    if raw_date:
+        if date_format == "epoch_ms":
+            try:
+                date_str = datetime.utcfromtimestamp(int(raw_date) / 1000).strftime("%Y-%m-%d")
+            except Exception:
+                pass
+        else:
+            date_str = str(raw_date)[:10]
 
     parts = []
-    if applicant:
-        parts.append(applicant)
-    if work_type:
-        parts.append(work_type.title())
-    if description:
-        parts.append(f"— {description[:100]}")
-    if full_address:
-        parts.append(f"at {full_address}")
-    if value_str:
-        parts.append(f"| Value: {value_str}")
-    if status:
-        parts.append(f"| {status}")
+    if applicant:  parts.append(applicant)
+    if permit_type: parts.append(permit_type.title())
+    if work_class:  parts.append(f"({work_class.title()})")
+    if description: parts.append(f"— {description[:100]}")
+    if address:     parts.append(f"at {address}")
+    if value_str:   parts.append(f"| Value: {value_str}")
 
-    snippet = " ".join(parts)
-    if not snippet.strip():
-        return None
+    snippet = " ".join(parts) or f"Permit at {address or 'unknown location'}"
 
     return {
-        "category": "permit_activity" if category == "residential" else "retail_commercial",
+        "category":       "permit_activity" if category == "residential" else "retail_commercial",
         "category_label": "Permit Activity" if category == "residential" else "Commercial Permit",
-        "keyword": work_type,
-        "snippet": snippet,
-        "source": "Indianapolis Open Data",
-        "date": date_str,
-        "value": value_str,
-        "address": full_address,
-        "applicant": applicant,
-        "permit_type": work_type,
-        "permit_number": permit_num,
+        "keyword":        permit_type,
+        "snippet":        snippet,
+        "source":         source,
+        "date":           date_str,
+        "value":          value_str,
+        "address":        address,
+        "applicant":      applicant,
+        "permit_type":    permit_type,
+        "work_class":     work_class,
+        "permit_number":  permit_num,
     }
 
 
-# ─── Blairsville GA (minutes PDFs) ───────────────────────────────────────────
+# ─── Blairsville GA (minutes HTML — kept for backward compat) ─────────────────
+
+BLAIRSVILLE_PAGES = [
+    "https://www.blairsville-ga.gov/citycouncil",
+    "https://www.blairsville-ga.gov/document-library",
+    "https://www.unioncountyga.gov/391/Commission-Meeting-Agendas-Minutes",
+]
+BLAIRSVILLE_CONFIG = {
+    "name": "Blairsville, GA", "state": "GA", "type": "none",
+    "official_links": [
+        {"label": "Blairsville City Council Minutes", "url": "https://www.blairsville-ga.gov/citycouncil"},
+        {"label": "Union County Commission Minutes", "url": "https://www.unioncountyga.gov/391/Commission-Meeting-Agendas-Minutes"},
+    ],
+}
 
 PERMIT_SECTION_MARKERS = [
     "building permit", "site plan", "variance", "rezoning", "rezone",
@@ -295,48 +416,28 @@ PERMIT_SECTION_MARKERS = [
     "approved", "denied", "tabled", "motion",
 ]
 
-NAV_PHRASES = [
-    "rss notify me", "search agendas by", "time period time period",
-    "last week last month", "enter search terms", "save form progress",
-    "notify me®", "sign up", "subscribe", "cookie policy",
-]
 
-
-def extract_text_from_pdf_bytes(pdf_bytes: bytes) -> str:
-    try:
-        import pypdf
-        import io
-        reader = pypdf.PdfReader(io.BytesIO(pdf_bytes))
-        return "".join(page.extract_text() or "" for page in reader.pages[:20])
-    except Exception as e:
-        logger.warning(f"PDF extraction failed: {e}")
-        return ""
-
-
-def is_garbled(text: str) -> bool:
+def _is_garbled(text: str) -> bool:
     non_ascii = sum(1 for c in text if ord(c) > 127)
     return non_ascii > len(text) * 0.12 if text else True
 
 
-def extract_permit_sentences(text: str) -> List[str]:
-    """Pull only sentences that contain permit/zoning keywords."""
+def _extract_permit_sentences(text: str) -> List[str]:
     sentences = re.split(r'(?<=[.!?])\s+|\n', text)
     results = []
     for sent in sentences:
         sent = sent.strip()
-        if len(sent) < 20 or is_garbled(sent):
+        if len(sent) < 20 or _is_garbled(sent):
             continue
-        low = sent.lower()
-        if any(kw in low for kw in PERMIT_SECTION_MARKERS):
-            clean = re.sub(r'\s+', ' ', sent)[:500]
-            results.append(clean)
+        if any(kw in sent.lower() for kw in PERMIT_SECTION_MARKERS):
+            results.append(re.sub(r'\s+', ' ', sent)[:500])
     return results
 
 
 def fetch_blairsville_minutes() -> List[Dict]:
-    cache_key = "open_data_blairsville"
+    cache_key = "open_data_blairsville_ga"
     cached = get_cached(cache_key)
-    if cached:
+    if cached is not None:
         return cached
 
     findings = []
@@ -344,25 +445,18 @@ def fetch_blairsville_minutes() -> List[Dict]:
         for url in BLAIRSVILLE_PAGES:
             try:
                 resp = client.get(url, timeout=15)
-                logger.info(f"Blairsville {url}: HTTP {resp.status_code}, {len(resp.content)} bytes")
                 if resp.status_code != 200:
                     continue
-                # Strip HTML tags and extract readable text
                 html = resp.text
                 text = re.sub(r'<script[^>]*>.*?</script>', ' ', html, flags=re.DOTALL | re.IGNORECASE)
                 text = re.sub(r'<style[^>]*>.*?</style>', ' ', text, flags=re.DOTALL | re.IGNORECASE)
                 text = re.sub(r'<[^>]+>', ' ', text)
                 text = re.sub(r'\s+', ' ', text).strip()
-                logger.info(f"Blairsville extracted {len(text)} chars of text")
-                sentences = extract_permit_sentences(text)
-                logger.info(f"Blairsville permit sentences: {len(sentences)}")
-                for sent in sentences[:20]:
+                for sent in _extract_permit_sentences(text)[:20]:
                     findings.append({
-                        "category": "permit_activity",
-                        "category_label": "Permit Activity",
-                        "keyword": "permit",
-                        "snippet": sent,
-                        "source": f"Blairsville Public Records — {url.split('/')[-1]}",
+                        "category": "permit_activity", "category_label": "Permit Activity",
+                        "keyword": "permit", "snippet": sent,
+                        "source": f"Blairsville Public Records",
                         "date": "", "value": None, "address": "",
                         "applicant": "", "permit_type": "", "permit_number": "",
                     })
@@ -375,66 +469,90 @@ def fetch_blairsville_minutes() -> List[Dict]:
     return findings
 
 
-# ─── Public entry points ──────────────────────────────────────────────────────
+# ─── Public entry point ───────────────────────────────────────────────────────
 
-CITIES = [
-    {"id": "blairsville_ga",   "name": "Blairsville, GA",       "metro_id": None,            "state": "GA"},
-    {"id": "indianapolis_in",  "name": "Indianapolis, IN",       "metro_id": "indianapolis",  "state": "IN"},
-    {"id": "nashville_tn",     "name": "Nashville-Davidson, TN", "metro_id": "nashville",     "state": "TN"},
-]
+def scrape_metro(metro_id: str) -> Dict:
+    """Fetch permit data for a single metro by its market ID."""
+    # Blairsville is a special non-market city — handle separately
+    if metro_id == "blairsville_ga":
+        cfg = BLAIRSVILLE_CONFIG
+        try:
+            findings = fetch_blairsville_minutes()
+        except Exception as e:
+            findings = []
+            logger.error(f"Blairsville fetch failed: {e}")
+        return _build_result(metro_id, cfg, findings)
 
-_FETCHERS = {
-    "blairsville_ga":  fetch_blairsville_minutes,
-    "indianapolis_in": fetch_indianapolis_permits,
-    "nashville_tn":    fetch_nashville_permits,
-}
+    cfg = CITY_CONFIGS.get(metro_id)
+    if not cfg:
+        return _empty_result(metro_id, metro_id.replace("_", " ").title(), "unknown", "no_config")
 
-
-def scrape_city(city: Dict) -> Dict:
-    fetcher = _FETCHERS.get(city["id"])
-    if not fetcher:
-        return _empty(city, "no_fetcher")
+    source_type = cfg.get("type", "none")
+    findings = []
 
     try:
-        findings = fetcher()
+        if source_type == "socrata":
+            findings = fetch_socrata_permits(metro_id, cfg)
+        elif source_type == "arcgis":
+            findings = fetch_arcgis_permits(metro_id, cfg)
+        # "none" → findings stays []
     except Exception as e:
-        logger.error(f"Fetcher failed for {city['name']}: {e}")
-        return _empty(city, f"error: {e}")
+        logger.error(f"Fetch failed for {metro_id}: {e}")
 
-    return {
-        "city_id":         city["id"],
-        "city_name":       city["name"],
-        "metro_id":        city.get("metro_id"),
-        "state":           city["state"],
-        "scraped_at":      datetime.utcnow().isoformat(),
-        "sources_checked": [city["id"]],
-        "pdfs_found":      0,
-        "findings":        findings[:80],
-        "finding_count":   len(findings),
-        "categories_found": list({f["category"] for f in findings}),
-        "status":          "success" if findings else "no_findings",
-    }
+    return _build_result(metro_id, cfg, findings)
 
 
-def scrape_all_cities() -> List[Dict]:
+def scrape_all_metros() -> List[Dict]:
+    """Fetch permit data for all 24 tracked metros + Blairsville."""
+    all_ids = list(CITY_CONFIGS.keys()) + ["blairsville_ga"]
     results = []
-    for city in CITIES:
-        logger.info(f"Fetching {city['name']}...")
-        results.append(scrape_city(city))
-        logger.info(f"  → {results[-1]['finding_count']} findings")
+    for metro_id in all_ids:
+        logger.info(f"Fetching intelligence for {metro_id}...")
+        result = scrape_metro(metro_id)
+        logger.info(f"  → {result['finding_count']} findings, status={result['status']}")
+        results.append(result)
     return results
 
 
-def _empty(city: Dict, reason: str) -> Dict:
+def _build_result(metro_id: str, cfg: Dict, findings: List[Dict]) -> Dict:
+    source_type = cfg.get("type", "none")
+    has_api = source_type in ("socrata", "arcgis")
     return {
-        "city_id":         city["id"],
-        "city_name":       city["name"],
-        "state":           city["state"],
-        "status":          reason,
-        "findings":        [],
-        "finding_count":   0,
-        "pdfs_found":      0,
-        "sources_checked": [],
-        "categories_found": [],
-        "scraped_at":      datetime.utcnow().isoformat(),
+        "city_id":          metro_id,
+        "city_name":        cfg.get("name", metro_id),
+        "state":            cfg.get("state", ""),
+        "scraped_at":       datetime.utcnow().isoformat(),
+        "findings":         findings[:80],
+        "finding_count":    len(findings),
+        "categories_found": list({f["category"] for f in findings}),
+        "status":           ("success" if findings else "no_findings") if has_api else "no_data",
+        "has_live_data":    has_api,
+        "official_links":   cfg.get("official_links", []),
     }
+
+
+def _empty_result(city_id: str, city_name: str, state: str, reason: str) -> Dict:
+    return {
+        "city_id": city_id, "city_name": city_name, "state": state,
+        "scraped_at": datetime.utcnow().isoformat(),
+        "findings": [], "finding_count": 0,
+        "categories_found": [], "status": reason,
+        "has_live_data": False, "official_links": [],
+    }
+
+
+# ─── Backward-compat aliases (used by main.py imports) ───────────────────────
+
+CITIES = [
+    {"id": "blairsville_ga",  "name": "Blairsville, GA",       "metro_id": None,           "state": "GA"},
+    {"id": "indianapolis_in", "name": "Indianapolis, IN",       "metro_id": "indianapolis", "state": "IN"},
+    {"id": "nashville_tn",    "name": "Nashville-Davidson, TN", "metro_id": "nashville",    "state": "TN"},
+]
+
+
+def scrape_city(city: Dict) -> Dict:
+    return scrape_metro(city.get("metro_id") or city["id"])
+
+
+def scrape_all_cities() -> List[Dict]:
+    return scrape_all_metros()
