@@ -57,6 +57,18 @@ export default function CityIntelligence({ theme }) {
   const sub     = '#888'
   const inputBg = isDark ? 'rgba(255,255,255,0.06)' : 'rgba(0,0,0,0.05)'
 
+  // useMemo must be called before any conditional returns (Rules of Hooks)
+  const cities = data?.cities || []
+  const filteredCities = useMemo(() => {
+    const q = citySearch.trim().toLowerCase()
+    if (!q) return cities
+    return cities.filter(c =>
+      c.city_name.toLowerCase().includes(q) ||
+      (c.state || '').toLowerCase().includes(q) ||
+      c.city_id.toLowerCase().includes(q)
+    )
+  }, [cities, citySearch])
+
   if (loading) return (
     <div style={{ padding: 48, textAlign: 'center', color: sub }}>
       <div style={{ fontSize: 32, marginBottom: 12 }}>⏳</div>
@@ -67,18 +79,6 @@ export default function CityIntelligence({ theme }) {
   if (error) return (
     <div style={{ padding: 20, color: '#D85A30' }}>Error loading intelligence: {error}</div>
   )
-
-  const cities = data?.cities || []
-
-  const filteredCities = useMemo(() => {
-    const q = citySearch.trim().toLowerCase()
-    if (!q) return cities
-    return cities.filter(c =>
-      c.city_name.toLowerCase().includes(q) ||
-      (c.state || '').toLowerCase().includes(q) ||
-      c.city_id.toLowerCase().includes(q)
-    )
-  }, [cities, citySearch])
 
   const current = cities.find(c => c.city_id === selectedId) || cities[0]
   if (!current) return null
